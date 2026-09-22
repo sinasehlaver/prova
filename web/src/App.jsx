@@ -56,7 +56,7 @@ function Placeholder({ id }) {
 }
 
 function SignupForm({ onDone, onBack }) {
-  const [form, setForm] = useState({ name: "", phone: "" });
+  const [form, setForm] = useState({ name: "", email: "", phone: "", password: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const submit = async (e) => {
@@ -72,6 +72,14 @@ function SignupForm({ onDone, onBack }) {
         <input autoFocus required maxLength={80} autoComplete="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
       </label>
       <label className="field">
+        <span>{tr.signup.email} <span className="muted small">({tr.signup.emailHint})</span></span>
+        <input required type="email" maxLength={254} autoComplete="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+      </label>
+      <label className="field">
+        <span>{tr.signup.password} <span className="muted small">({tr.signup.passwordHint})</span></span>
+        <input required type="password" minLength={8} maxLength={128} autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+      </label>
+      <label className="field">
         <span>{tr.signup.phone} <span className="muted small">({tr.signup.phoneHint})</span></span>
         <input inputMode="tel" maxLength={30} autoComplete="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
       </label>
@@ -79,7 +87,7 @@ function SignupForm({ onDone, onBack }) {
       {error && <p className="notice bad" role="alert">{error}</p>}
       <div className="row end">
         <button type="button" className="btn ghost" onClick={onBack}>{tr.signup.back}</button>
-        <button className="btn primary" disabled={busy || !form.name.trim()}>{tr.signup.submit}</button>
+        <button className="btn primary" disabled={busy || !form.name.trim() || !form.email || !form.password}>{tr.signup.submit}</button>
       </div>
     </form>
   );
@@ -87,6 +95,22 @@ function SignupForm({ onDone, onBack }) {
 
 function Login({ invalid, onSignedUp }) {
   const [signup, setSignup] = useState(false);
+  const [form, setForm] = useState({ email: "", password: "" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setError("");
+    try {
+      const user = await api("POST", "/login", form);
+      onSignedUp(user);
+    } catch (err) {
+      setError(err.message || tr.err.generic);
+      setBusy(false);
+    }
+  };
+
   return (
     <main className="login">
       <div className="login-card card">
@@ -96,7 +120,21 @@ function Login({ invalid, onSignedUp }) {
           <>
             <p className="muted">{tr.login.body}</p>
             {invalid && <p className="notice bad" role="alert">{tr.login.invalid}</p>}
-            <button className="btn primary login-cta" onClick={() => setSignup(true)}>{tr.signup.open}</button>
+            {error && <p className="notice bad" role="alert">{error}</p>}
+            <form className="sheet-form" onSubmit={submit}>
+              <label className="field">
+                <span>{tr.login.email}</span>
+                <input autoFocus required type="email" autoComplete="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+              </label>
+              <label className="field">
+                <span>{tr.login.password}</span>
+                <input required type="password" autoComplete="current-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+              </label>
+              <div className="row end">
+                <button className="btn primary" disabled={busy || !form.email || !form.password}>{tr.login.submit}</button>
+              </div>
+            </form>
+            <p className="muted small"><button className="link" onClick={() => setSignup(true)}>{tr.login.signupLink}</button></p>
             <p className="muted small">{tr.login.lost}</p>
           </>
         )}

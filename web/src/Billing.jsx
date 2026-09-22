@@ -1,8 +1,9 @@
-// Member view: read-only. Self-serve dekont upload + automatic verification is switched off (2026-09-22) - an admin
-// records payments by hand (AdminBilling -> UserDetail). The shared pieces below are reused by the admin screens.
+// Member view: mostly read-only, plus a self-serve dekont upload (re-enabled 2026-09-22, admin-approval-only - see
+// lib/billing.mjs / lib/payments.mjs). A member can upload a PDF; it lands as a 'pending' receipt that affects no
+// balance until an admin reviews it (AdminBilling -> Payments/UserDetail). The shared pieces below are reused there.
 import React, { useEffect, useRef, useState } from "react";
 import "./billing.css";
-import { api } from "./api.js";
+import { api, apiUpload } from "./api.js";
 import { tr } from "./tr.js";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
 import { fmtShort, fmtTime } from "./time.js";
@@ -27,7 +28,7 @@ export function StatusPill({ status, flag, partial }) {
   const key = flag || (partial ? "partial" : status === "ok" ? "paid" : status);
   const s = tr.billing.status;
   const [Icon, tone] =
-    key === "paid" ? [CheckG, "ok"] : ["mismatch", "unreadable", "duplicate", "partial"].includes(key) ? [AlertG, "warn"] : key === "unpaid" ? [CrossG, ""] : [DashG, ""];
+    key === "paid" ? [CheckG, "ok"] : ["mismatch", "unreadable", "duplicate", "partial", "pending"].includes(key) ? [AlertG, "warn"] : key === "unpaid" ? [CrossG, ""] : [DashG, ""];
   return <span className={"pill " + tone}><Icon />{s[key] ?? key}</span>;
 }
 
@@ -151,6 +152,7 @@ export default function Billing() {
   const [data, setData] = useState(null);
   const [loadErr, setLoadErr] = useState("");
   const [toast, setToast] = useState("");
+  const [uploading, setUploading] = useState(false);
   const timer = useRef();
   const say = (m) => { setToast(m); clearTimeout(timer.current); timer.current = setTimeout(() => setToast(""), 2200); };
 
@@ -160,6 +162,19 @@ export default function Billing() {
     } catch (e) { setLoadErr(e.message || tr.err.load); say(e.message || tr.err.generic); }
   };
   useEffect(() => { load(); }, []);
+
+  const upload = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    if (!/pdf$/i.test(f.name) && f.type !== "application/pdf") return say(tr.billing.onlyPdf);
+    setUploading(true);
+    try {
+      await apiUpload("/billing/receipts", f);
+      say(tr.billing.uploaded);
+      await load(data?.month);
+    } catch (err) { say(err.message || tr.err.generic); } finally { setUploading(false); }
+  };
 
   if (!data) return <section><div className="page-head"><h2>{tr.billing.title}</h2></div>{loadErr ? <ErrorState message={loadErr} onRetry={() => { setLoadErr(""); load(); }} /> : <Skeleton rows={3} />}</section>;
 
@@ -174,10 +189,16 @@ export default function Billing() {
       <h3 className="sec-title">{tr.billing.items}</h3>
       <ItemList items={data.items} />
 
-      {/* payments are recorded by an admin: the member page only explains the route, it never uploads */}
+      {/* two ways to pay, both admin-reviewed - nothing is decided automatically either way */}
       <section className="card howto" aria-label={tr.billing.howTitle}>
         <h3>{tr.billing.howTitle}</h3>
         <p>{tr.billing.howNote}</p>
+        <div className="row wrap">
+          <label className="btn file" aria-disabled={uploading}>
+            <input type="file" accept="application/pdf,.pdf" onChange={upload} disabled={uploading} />
+            <UploadG width="16" height="16" />{uploading ? tr.billing.uploading : tr.billing.uploadPick}
+          </label>
+        </div>
       </section>
 
       {data.receipts.length > 0 && (

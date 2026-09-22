@@ -46,15 +46,17 @@ id2=$(echo "$a2" | head -1 | node -e 'console.log(JSON.parse(require("fs").readF
 [ "$(curl -sf -b "$jar" "$B/api/alerts")" = "[]" ] || { echo "alert still open after close"; exit 1; }
 echo "alerts ok (raise idempotent, close)"
 
-# billing: subscription charge materialised (1500); the member self-serve dekont upload is SWITCHED OFF (403) and an
-# admin records a part-payment by hand instead (1.000 of 1.500 -> item stays unpaid, kalan 500)
+# billing: subscription charge materialised (1500). Member self-serve upload is back (admin-approval-only): lands
+# pending, no allocation. An admin also records a part-payment by hand (1.000 of 1.500 -> item stays unpaid, kalan 500).
 js() { node -e "const j=JSON.parse(require('fs').readFileSync(0));$1"; }
 bill=$(curl -sf -b "$jar" "$B/api/billing")
 month=$(echo "$bill" | js 'console.log(j.month)')
 [ "$(echo "$bill" | js 'console.log(j.items.find(i=>i.kind==="subscription").amount_try)')" = 1500 ] || { echo "subscription charge != 1500"; exit 1; }
 mtok=$(curl -sf -b "$jar" -H 'content-type: application/json' -d '{"name":"Smoke Üye"}' "$B/api/users" | js 'console.log(j.invite_token)')
 mid=$(curl -sf -b "$jar" "$B/api/users" | js 'console.log(j.find(u=>u.name==="Smoke Üye").id)')
-[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "cookie: prova_session=$mtok" -H 'content-type: application/pdf' --data-binary @fixtures/receipts/enpara-1500.pdf "$B/api/billing/receipts?month=$month")" = 403 ] || { echo "member self-serve upload must be 403"; exit 1; }
+up=$(curl -s -X POST -H "cookie: prova_session=$mtok" -H 'content-type: application/pdf' --data-binary @fixtures/receipts/ziraat-1500.pdf "$B/api/billing/receipts")
+echo "$up" | grep -q '"status":"pending"' || { echo "member self-serve upload should land pending: $up"; exit 1; }
+[ "$(curl -sf -H "cookie: prova_session=$mtok" "$B/api/billing" | js 'console.log(j.kalan)')" = 1500 ] || { echo "a pending upload must not change kalan"; exit 1; }
 rec=$(curl -s -b "$jar" -X POST -H 'content-type: application/pdf' --data-binary @fixtures/receipts/enpara-1000-mismatch.pdf "$B/api/admin/users/$mid/receipts?amount_try=1000&filename=elle.pdf&note=Elle+kaydedildi")
 echo "$rec" | grep -q '"applied_try":1000' || { echo "manual payment record failed: $rec"; exit 1; }
 curl -sf -b "$jar" "$B/api/admin/users/$mid/billing" | js 'const s=j.items.find(i=>i.kind==="subscription");if(s.status!=="unpaid"||s.paid_try!==1000||j.kalan!==500)process.exit(1)' || { echo "manual part-payment not reflected"; exit 1; }
@@ -67,7 +69,7 @@ curl -sf -b "$jar" "$B/api/admin/billing/overview" | js 'const m=j.users.find(u=
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "cookie: prova_session=$mtok" "$B/api/admin/receipts")" = 403 ] || { echo "member reached admin receipts"; exit 1; }
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "cookie: prova_session=$mtok" -H 'content-type: application/pdf' --data-binary @fixtures/receipts/enpara-1500.pdf "$B/api/admin/receipts/parse")" = 403 ] || { echo "member reached the dekont parser"; exit 1; }
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "cookie: prova_session=$mtok" "$B/api/billing")" = 200 ] || { echo "member billing failed"; exit 1; }
-echo "billing ok (charge 1500, self-serve upload off, admin part-payment recorded, member gated)"
+echo "billing ok (charge 1500, self-serve upload pending, admin part-payment recorded, member gated)"
 
 # economics: admin-only; a big cost this month makes the summary suggest an increase (browser step applies it)
 [ "$(curl -s -o /dev/null -w '%{http_code}' -H "cookie: prova_session=$mtok" "$B/api/admin/economics")" = 403 ] || { echo "member reached economics"; exit 1; }

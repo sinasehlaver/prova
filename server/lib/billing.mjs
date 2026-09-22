@@ -109,6 +109,9 @@ export async function monthView(db, userId, month) {
  *   outstanding_try = the selected month only   |   debt_try = every month up to the current one (debt carries over:
  * charges stay in the month they were created in, nothing rolls them forward).
  * Members are active ones + anyone deactivated who still owes something (otherwise the grand total would lie).
+ * The bootstrap admin (lowest id, created by seed.mjs at first boot) is excluded here too, same as GET /users -
+ * it's a deploy-time secret account, not a real member, and shouldn't show up (or count toward the totals) on the
+ * admin-facing Ödemeler screen.
  */
 export async function outstandingOverview(db, month) {
   const owed = `MAX(c.amount_try - ${COVERED_SQL}, 0)`;
@@ -119,7 +122,7 @@ export async function outstandingOverview(db, month) {
           FROM users u
           LEFT JOIN charges c ON c.user_id = u.id AND c.month <= ?2
             AND c.voided_at IS NULL AND c.waived_at IS NULL AND c.paid_receipt_id IS NULL
-          WHERE u.status <> 'pending'
+          WHERE u.status <> 'pending' AND u.id <> (SELECT MIN(id) FROM users)
           GROUP BY u.id, u.name, u.active
           HAVING u.active = 1 OR debt_try > 0
           ORDER BY debt_try DESC, u.id`,

@@ -4,7 +4,7 @@ import express, { Router } from "express";
 import { requireAuth } from "../lib/auth.mjs";
 import { browsableMonths, ensureMonth, fail, isMonth, monthView } from "../lib/billing.mjs";
 import { creditPayload } from "../lib/credits.mjs";
-import { getSettings, listReceipts, MAX_PDF } from "../lib/payments.mjs";
+import { getSettings, listReceipts, MAX_PDF, submitReceipt } from "../lib/payments.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 import billingAdmin from "./billing-admin.mjs";
 
@@ -41,10 +41,12 @@ export default ({ db }) => {
     res.json(await billingPayload(db, req.user, pickMonth(req.query.month, req.user)));
   }));
 
-  // Self-serve member upload is SWITCHED OFF (2026-09-22): payments are recorded by an admin
-  // (POST /api/admin/users/:id/receipts). Kept as an explicit gate so old clients get a Turkish reason, not a 404.
-  r.post("/billing/receipts", requireAuth, guard(async () => {
-    throw fail(403, "Dekont yükleme kapatıldı. Dekontunu yöneticine ilet, ödemeni o kaydeder.");
+  // Member self-serve upload (re-enabled 2026-09-22, admin-approval-only): a raw PDF body, no amount, no charge
+  // selection. Lands as status='pending' - it affects no balance until an admin approves (POST
+  // /api/admin/receipts/:id/approve, which now also accepts a pending receipt) or rejects it. Nothing automatic.
+  r.post("/billing/receipts", requireAuth, rawPdf, guard(async (req, res) => {
+    const id = await submitReceipt(db, req.user, { buffer: bodyBuf(req), filename: req.query.filename });
+    res.status(201).json((await listReceipts(db, { id }))[0]);
   }));
 
   r.get("/receipts/:id/pdf", requireAuth, guard(async (req, res) => {

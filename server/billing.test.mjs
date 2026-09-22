@@ -106,21 +106,61 @@ test("failed reservation (overlap) leaves no charges behind", async () => {
   assert.equal((await t.db.execute("SELECT COUNT(*) n FROM charges")).rows[0].n, before);
 });
 
-test("member self-serve upload is switched off: anon 401, member/admin 403, nothing stored", async () => {
-  const u = await mk("Kapali");
-  assert.equal((await t.fetch(`/api/billing/receipts?month=${M}`, { method: "POST" })).status, 401);
-  const r = await t.fetch(`/api/billing/receipts?month=${M}`, { method: "POST", as: u, body: {} });
-  assert.equal(r.status, 403);
-  assert.match((await J(r)).error, /yöneticine/);
-  assert.equal((await t.fetch("/api/billing/receipts", { method: "POST", as: t.admin, body: {} })).status, 403);
-  // a real raw-PDF upload is refused too (the route never reads the body)
-  const raw = await fetch(`${t.base}/api/billing/receipts?month=${M}`, {
-    method: "POST", headers: { "content-type": "application/pdf", cookie: `${COOKIE}=${u.invite_token}` }, body: fx("enpara-1500.pdf"),
+// Member uploads a dekont with no charges/amount, own session, raw PDF body. Body is a synthetic (not fixture) PDF -
+// unique content each call, so its sha256 never collides with a fixture-based receipt some OTHER test stores; the
+// content doesn't matter here since the member picks no amount/charges and the admin types the amount by hand.
+let uploadSeq = 0;
+const fakePdf = () => Buffer.from(`%PDF-1.4\n%member-upload-test-${Date.now()}-${uploadSeq++}\n`, "latin1");
+const upload = (u) =>
+  fetch(`${t.base}/api/billing/receipts`, { method: "POST", headers: { "content-type": "application/pdf", cookie: `${COOKIE}=${u.invite_token}` }, body: fakePdf() });
+
+test("member self-serve upload (re-enabled, admin-approval-only): PENDING, non-allocating; admin approve/reject decide", async () => {
+  const u = await mk("Yukle");
+  assert.equal((await t.fetch(`/api/billing/receipts`, { method: "POST" })).status, 401); // anon
+  const bad = await fetch(`${t.base}/api/billing/receipts`, {
+    method: "POST", headers: { "content-type": "application/pdf", cookie: `${COOKIE}=${u.invite_token}` }, body: Buffer.from("not a pdf"),
   });
-  assert.equal(raw.status, 403);
+  assert.equal(bad.status, 400);
+
+  // a real dekont lands as 'pending': stored, but nothing allocated, nothing owed changes
+  const before = await bill(u);
+  const up = await upload(u);
+  assert.equal(up.status, 201);
+  const out = await J(up);
+  assert.equal(out.status, "pending");
+  assert.equal(out.applied_try, null);
   const v = await bill(u);
-  assert.equal(v.receipts.length, 0);
-  assert.equal(v.kalan, 1500);
+  assert.equal(v.kalan, before.kalan);
+  assert.equal(v.receipts.length, 1);
+  assert.equal(v.receipts[0].status, "pending");
+  assert.match(v.receipts[0].message, /bekliyor/);
+
+  // admin sees it via the status filter
+  const list = await J(await admin(`/receipts?status=pending&user_id=${u.id}`));
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, out.id);
+
+  // reject: -> mismatch, no allocation, reason shown; member can't approve/reject their own
+  assert.equal((await t.fetch(`/api/admin/receipts/${out.id}/reject`, { method: "POST", as: u })).status, 403);
+  const rj = await J(await admin(`/receipts/${out.id}/reject`, { method: "POST", body: { note: "Okunamıyor" } }));
+  assert.equal(rj.status, "mismatch");
+  assert.match(rj.message, /Okunamıyor/);
+  assert.equal((await bill(u)).kalan, before.kalan);
+
+  // approve on a fresh pending upload: the admin types the amount, same allocation as recordPayment - but on THIS row
+  const up2 = await upload(u);
+  const out2 = await J(up2);
+  assert.equal((await admin(`/receipts/${out2.id}/approve`, { method: "POST", body: {} })).status, 400); // no amount yet
+  const ap = await J(await admin(`/receipts/${out2.id}/approve`, { method: "POST", body: { amount_try: 1500, note: "Kontrol edildi" } }));
+  assert.equal(ap.status, "ok");
+  assert.equal(ap.applied_try, 1500);
+  assert.match(ap.message, /Kontrol edildi/);
+  const v2 = await bill(u);
+  assert.equal(sub(v2).status, "paid");
+  assert.equal(sub(v2).paid_by, "admin");
+  assert.equal(v2.kalan, 0);
+  // the pdf is still viewable under the member's own upload
+  assert.equal((await t.fetch(`/api/receipts/${out2.id}/pdf`, { as: u })).status, 200);
 });
 
 test("admin records a payment: exact amount ticks the selected charges (paid_by admin), pdf stored + viewable", async () => {
@@ -440,7 +480,10 @@ test("admin overview: every member, their outstanding and the grand total (defau
   assert.equal(o.total_debt_try, o.users.reduce((s, x) => s + x.debt_try, 0));
   assert.ok(o.total_outstanding_try >= o.users.find((x) => x.id === u.id).outstanding_try);
   assert.equal(o.owing_count, o.users.filter((x) => x.debt_try > 0).length);
-  const active = (await t.db.execute("SELECT id FROM users WHERE active = 1")).rows;
+  // the bootstrap admin (lowest id, from seed - t.admin here) is a deploy-time secret account, not a real member:
+  // hidden from the overview and its totals, same as it's hidden from GET /users.
+  assert.ok(!o.users.some((x) => x.id === t.admin.id), "bootstrap admin must not appear in the overview");
+  const active = (await t.db.execute({ sql: "SELECT id FROM users WHERE active = 1 AND id <> ?", args: [t.admin.id] })).rows;
   for (const a of active) assert.ok(o.users.some((x) => x.id === a.id), `user ${a.id} missing from the overview`);
   assert.ok(o.months.includes(M));
 
@@ -468,4 +511,20 @@ test("admin overview: every member, their outstanding and the grand total (defau
   assert.equal((await admin("/billing/overview?month=bad")).status, 400);
   assert.equal((await admin(`/billing/overview?month=${NEXT}`)).status, 400);
   assert.equal((await t.fetch("/api/admin/billing/overview", { as: t.member })).status, 403);
+});
+
+test("admin per-user reservations: people + the booking charge's SNAPSHOT amount, cancelled ones keep their charge too", async () => {
+  const a = await mk("Rez");
+  const r1 = await J(await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: day(5), hours: 1, people: 2 } }));
+  const r2 = await J(await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: day(6), hours: 1, people: 4 } }));
+  assert.equal((await t.fetch(`/api/reservations/${r2.id}`, { method: "DELETE", as: a })).status, 200);
+
+  const res = await J(await admin(`/users/${a.id}/reservations`));
+  const row1 = res.find((r) => r.id === r1.id), row2 = res.find((r) => r.id === r2.id);
+  assert.equal(row1.people, 2);
+  assert.equal(row1.charge_try, 2 * 500); // per-person booking fee snapshot
+  assert.equal(row1.cancelled_at, null);
+  assert.equal(row2.people, 4);
+  assert.equal(row2.charge_try, 4 * 500); // a cancelled reservation's charge is voided, not deleted - snapshot survives
+  assert.ok(row2.cancelled_at);
 });

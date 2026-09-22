@@ -51,6 +51,26 @@ test("role gating", async () => {
   assert.equal((await t.fetch("/api/users", { as: t.admin })).status, 200);
 });
 
+test("bootstrap admin (lowest id, from seed) is hidden from GET /users for everyone else; a later-promoted admin stays visible", async () => {
+  // promote an existing member to admin, so we have a non-bootstrap admin's eye view
+  const promoted = await (await t.fetch(`/api/users/${t.member2.id}`, { method: "PATCH", as: t.admin, body: { role: "admin" } })).json();
+  assert.equal(promoted.role, "admin");
+
+  const listFromPromoted = await (await t.fetch("/api/users", { as: t.member2 })).json();
+  assert.ok(!listFromPromoted.some((u) => u.id === t.admin.id), "bootstrap admin must not appear in a promoted admin's list");
+  assert.ok(listFromPromoted.some((u) => u.id === t.member2.id && u.role === "admin"), "the promoted admin sees themselves");
+
+  const listFromMember = await (await t.fetch("/api/users", { as: t.member })).status; // members are 403, can't see any list
+  assert.equal(listFromMember, 403);
+
+  const listFromBootstrap = await (await t.fetch("/api/users", { as: t.admin })).json();
+  assert.ok(listFromBootstrap.some((u) => u.id === t.admin.id), "the bootstrap admin still sees themselves in their own list");
+  assert.ok(listFromBootstrap.some((u) => u.id === t.member2.id && u.role === "admin"), "promoted admin also visible to the bootstrap admin");
+
+  // demote back so later tests aren't affected by this test
+  await t.fetch(`/api/users/${t.member2.id}`, { method: "PATCH", as: t.admin, body: { role: "member" } });
+});
+
 test("admin creates member, regenerate invalidates old link, deactivate blocks login", async () => {
   const c = await t.fetch("/api/users", { method: "POST", as: t.admin, body: { name: "Deniz" } });
   assert.equal(c.status, 201);
@@ -84,7 +104,6 @@ test("every admin route: anonymous 401, member 403 (admin area is strongly guard
     ["GET", "/api/admin/users/1/billing"], ["GET", "/api/admin/users/1/receipts"], ["POST", "/api/admin/users/1/receipts"],
     ["GET", "/api/admin/users/1/reservations"],
     ["POST", "/api/admin/users/1/charges"], ["POST", "/api/admin/charges/1/waive"],
-    ["POST", "/api/billing/receipts"], // self-serve member upload is off: admin-only reason, members get 403
     ["GET", "/api/admin/fees"], ["POST", "/api/admin/fees"], ["GET", "/api/admin/settings"], ["PUT", "/api/admin/settings"],
     ["GET", "/api/admin/economics"], ["POST", "/api/admin/economics/apply"],
     ["GET", "/api/admin/costs"], ["POST", "/api/admin/costs"], ["PATCH", "/api/admin/costs/1"], ["DELETE", "/api/admin/costs/1"],
@@ -128,19 +147,62 @@ test("POST /api/logout clears the cookie but keeps the invite token valid", asyn
   assert.equal((await t.fetch("/api/logout", { method: "POST" })).status, 200); // idempotent when logged out
 });
 
+test("POST /api/login: credential login works for approved users", async () => {
+  // Create a user with email + password via admin
+  const u = await (await t.fetch("/api/users", { method: "POST", as: t.admin, body: { name: "Login Test", email: "logintest@example.com" } })).json();
+  // Set password hash directly (simulate user setting it)
+  const { hashPassword } = await import("./lib/auth.mjs");
+  const hash = await hashPassword("testpass123");
+  await t.db.execute({ sql: "UPDATE users SET password_hash = ? WHERE id = ?", args: [hash, u.id] });
+  
+  // Login with correct credentials
+  const login = await t.fetch("/api/login", { method: "POST", body: { email: "logintest@example.com", password: "testpass123" } });
+  assert.equal(login.status, 200);
+  const data = await login.json();
+  assert.equal(data.id, u.id);
+  assert.equal(data.email, "logintest@example.com");
+  const cookie = login.headers.get("set-cookie");
+  assert.match(cookie, /prova_session=/);
+  
+  // Cookie works for /me
+  const me = await t.fetch("/api/me", { headers: { Cookie: cookie } });
+  assert.equal(me.status, 200);
+  const meData = await me.json();
+  assert.equal(meData.id, u.id);
+  
+  // Wrong password fails
+  const badLogin = await t.fetch("/api/login", { method: "POST", body: { email: "logintest@example.com", password: "wrong" } });
+  assert.equal(badLogin.status, 401);
+  
+  // Non-existent email fails
+  const noUser = await t.fetch("/api/login", { method: "POST", body: { email: "nobody@example.com", password: "testpass123" } });
+  assert.equal(noUser.status, 401);
+  
+  // Pending user cannot log in with credentials
+  const pending = await (await t.fetch("/api/signup", { method: "POST", body: { name: "Pending", email: "pending@example.com", password: "testpass123" } })).json();
+  const pendingLogin = await t.fetch("/api/login", { method: "POST", body: { email: "pending@example.com", password: "testpass123" } });
+  assert.equal(pendingLogin.status, 401);
+  // clean up: don't leak a pending user into later tests that assume they're the only one
+  await t.fetch(`/api/users/${pending.id}/reject`, { method: "POST", as: t.admin });
+});
+
 const signup = (body, headers) => t.fetch("/api/signup", { method: "POST", body, headers });
-const cookieOf = (r) => ({ invite_token: decodeURIComponent(r.headers.get("set-cookie").match(/prova_session=([^;]+)/)[1]) });
+const cookieOf = (r) => {
+  const m = r.headers.get("set-cookie")?.match(/prova_session=([^;]+)/);
+  return m ? { invite_token: decodeURIComponent(m[1]) } : null;
+};
 
 test("signup -> pending (only /me works, everything else 403) -> admin approves -> full access", async () => {
-  const r = await signup({ name: " Selin Aksoy ", phone: "0532 111 22 33" });
+  const r = await signup({ name: " Selin Aksoy ", email: "selin@example.com", password: "secret123", phone: "0532 111 22 33" });
   assert.equal(r.status, 201);
   const me = await r.json();
   assert.deepEqual([me.name, me.role, me.status, me.active], ["Selin Aksoy", "member", "pending", false]);
+  assert.ok(me.email === "selin@example.com");
   const pend = cookieOf(r);
 
   const st = await (await t.fetch("/api/me", { as: pend })).json();
   assert.equal(st.status, "pending");
-  for (const [m, p] of [["GET", "/api/reservations"], ["GET", "/api/members"], ["GET", "/api/billing"], ["GET", "/api/alerts"], ["PATCH", "/api/me"], ["GET", "/api/users"], ["GET", "/api/admin/fees"]]) {
+  for (const [m, p] of [["GET", "/api/reservations"], ["GET", "/api/members"], ["GET", "/api/billing"], ["POST", "/api/billing/receipts"], ["GET", "/api/alerts"], ["PATCH", "/api/me"], ["GET", "/api/users"], ["GET", "/api/admin/fees"]]) {
     const x = await t.fetch(p, { as: pend, method: m, body: m === "GET" ? undefined : { name: "x" } });
     assert.equal(x.status, 403, `${m} ${p}`);
   }
@@ -171,7 +233,7 @@ test("signup -> pending (only /me works, everything else 403) -> admin approves 
 });
 
 test("signup -> admin rejects -> account gone, cookie dead", async () => {
-  const r = await signup({ name: "Reddedilecek" });
+  const r = await signup({ name: "Reddedilecek", email: "reject@example.com", password: "secret123" });
   const me = await r.json();
   const pend = cookieOf(r);
   assert.equal((await t.fetch(`/api/users/${me.id}/reject`, { method: "POST", as: t.member })).status, 403);
@@ -185,10 +247,11 @@ test("signup -> admin rejects -> account gone, cookie dead", async () => {
 });
 
 test("signup validation; already logged in; /i/ link still logs a pending account in", async () => {
-  assert.equal((await signup({ name: "  " })).status, 400);
-  assert.equal((await signup({ name: "A", phone: "abc" })).status, 400);
-  assert.equal((await t.fetch("/api/signup", { method: "POST", as: t.member, body: { name: "Başka" } })).status, 409);
-  const r = await signup({ name: "Link Test" });
+  assert.equal((await signup({ name: "  ", email: "x@y.com", password: "secret123" })).status, 400);
+  assert.equal((await signup({ name: "A", email: "bad", password: "secret123" })).status, 400);
+  assert.equal((await signup({ name: "A", email: "a@b.com", password: "short" })).status, 400);
+  assert.equal((await t.fetch("/api/signup", { method: "POST", as: t.member, body: { name: "Başka", email: "baska@example.com", password: "secret123" } })).status, 409);
+  const r = await signup({ name: "Link Test", email: "link@example.com", password: "secret123" });
   const u = await (await t.fetch("/api/users", { as: t.admin })).json();
   const row = (await t.db.execute("SELECT invite_token FROM users WHERE name = 'Link Test'")).rows[0];
   assert.equal((await t.fetch(`/i/${row.invite_token}`)).status, 302);
@@ -200,7 +263,7 @@ test("signup is rate limited per IP", async () => {
   const t2 = await makeTestApp();
   try {
     const codes = [];
-    for (let i = 0; i < 7; i++) codes.push((await t2.fetch("/api/signup", { method: "POST", body: { name: "Kisi " + i } })).status);
+    for (let i = 0; i < 7; i++) codes.push((await t2.fetch("/api/signup", { method: "POST", body: { name: "Kisi " + i, email: `kisi${i}@example.com`, password: "secret123" } })).status);
     assert.deepEqual(codes, [201, 201, 201, 201, 201, 429, 429]);
   } finally { await t2.close(); }
 });

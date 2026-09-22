@@ -17,14 +17,16 @@ try {
   if (!(await page.textContent(".notice")).includes("geçersiz")) fail("invalid-link notice missing");
   await page.screenshot({ path: `${SHOTS}/login.png` });
   // self-signup: the login screen offers "Hesap oluştur"; a new account lands on the "Onay bekleniyor" screen, not the app
-  await page.click(".login-cta");
+  await page.click(".login-card .link");
   await page.fill(".signup-form .field input >> nth=0", "Tarayıcı Deneme");
+  await page.fill('.signup-form input[type="email"]', `tarayici-${Date.now()}@example.com`);
+  await page.fill('.signup-form input[type="password"]', "deneme12345");
   await page.click(".signup-form .btn.primary");
   await page.waitForFunction(() => document.querySelector(".login-card h1")?.textContent === "Onay bekleniyor");
   if (await page.$(".tabbar")) fail("pending account must not see the app");
   await page.screenshot({ path: `${SHOTS}/pending.png` });
   await page.click(".login-actions .btn.ghost"); // Çıkış yap -> back to the login screen
-  await page.waitForSelector(".login-cta");
+  await page.waitForSelector(".login-card .link");
 
   // invite link -> logged in, tab bar incl. Admin
   await page.goto(`${BASE}/i/${TOKEN}`, { waitUntil: "networkidle" });
@@ -132,7 +134,7 @@ try {
   await page.click(".alert-banner .btn.good");
   await page.waitForFunction(() => !document.querySelector(".alert-banner"));
 
-  // Members: list, create, regenerate, deactivate
+  // Members: list, create
   await page.click(".tab:has-text('Yönetim')");
   await page.waitForSelector(".member");
   // the pending browser signup is listed first with Onayla / Reddet; approve it (no invite-link copy button anywhere)
@@ -146,32 +148,39 @@ try {
   await page.fill(".form .field input >> nth=0", "Verify Kişi");
   await page.click(".form .btn.primary");
   await page.waitForFunction(() => document.querySelectorAll(".member").length === 7);
-  await page.locator(".member", { hasText: "Verify Kişi" }).getByText("Pasifleştir").click();
-  await page.waitForSelector(".member.off");
   await page.screenshot({ path: `${SHOTS}/members.png`, fullPage: true });
   await page.waitForSelector(".kind-row");
   if ((await page.$$eval(".kind-row", (e) => e.length)) < 10) fail("alert kinds admin list");
 
-  // Ödemelerim: read-only now - kalan card + items, and NO self-serve dekont upload (payments are recorded by an admin)
+  // Ödemelerim: items are read-only (no selection), but a self-serve dekont upload is back (admin-approval-only,
+  // re-enabled 2026-09-22) - it must land as a pending, non-allocating receipt, not touch the kalan.
   await page.click(".tab:has-text('Ödemelerim')");
   await page.waitForSelector(".bill-item");
   if (!(await page.textContent(".kalan-amount")).includes("1.500")) fail("kalan card should show 1.500 TL before paying");
   if (await page.$(".bill-item input[type=checkbox]")) fail("member items must not be selectable any more");
-  if (await page.$("input[type=file]")) fail("member self-serve dekont upload must be gone");
-  if (!(await page.$(".howto"))) fail("member page should explain that the admin records payments");
+  if (!(await page.$(".howto input[type=file]"))) fail("member self-serve dekont upload should be available again");
+  if (!(await page.$(".howto"))) fail("member page should explain how to pay");
+  await page.setInputFiles(".howto input[type=file]", new URL("../fixtures/receipts/papara-1500.pdf", import.meta.url).pathname);
+  await page.waitForSelector(".toast.show:has-text('yönetici onayını bekliyor')");
+  await page.waitForSelector(".rcpt .pill:has-text('Onay bekliyor')");
+  if (!(await page.textContent(".kalan-amount")).includes("1.500")) fail("a pending upload must not touch the kalan");
   await page.screenshot({ path: `${SHOTS}/billing.png`, fullPage: true });
 
-  // Admin records the payment by hand: Üyeler -> Yönetici -> Ödemeler; tick only the subscription, attach the dekont
-  // (parsed as a SUGGESTION that prefills the amount - it decides nothing), then save.
+  // Admin: Üyeler -> Yönetici -> Ödemeler. The just-uploaded dekont shows up as a pending card first - reject it
+  // (no allocation, just exercises the review UI) - then record the real payment by hand as before.
   await page.click(".tab:has-text('Yönetim')");
   await page.click(".subtabs button:has-text('Üyeler')");
-  await page.locator(".member", { hasText: "Yönetici" }).getByText("Ödemeler", { exact: true }).click();
+  await page.locator(".member").filter({ has: page.locator(".member-name", { hasText: "Yönetici" }) }).getByText("Ödemeler", { exact: true }).click();
   await page.waitForSelector(".pay-form");
+  await page.waitForSelector(".a-rcpt .pill:has-text('Onay bekliyor')");
+  await page.fill(".a-rcpt:has-text('Onay bekliyor') .review input:not([type=number])", "Yanlış üye adına yüklenmiş");
+  await page.click(".a-rcpt:has-text('Onay bekliyor') .btn.danger");
+  await page.waitForSelector(".a-rcpt .pill:has-text('Onay bekliyor')", { state: "detached" });
+  await page.screenshot({ path: `${SHOTS}/admin-pending-rejected.png`, fullPage: true });
   for (const cb of await page.$$(".bill-item:not([data-kind=subscription]) input:checked")) await cb.click();
   await page.setInputFiles(".pay-form input[type=file]", new URL("../fixtures/receipts/enpara-1500.pdf", import.meta.url).pathname);
-  await page.waitForSelector(".pay-parsed");
-  if (!(await page.textContent(".pay-parsed")).includes("1.500")) fail("the dekont amount should be suggested to the admin");
-  if ((await page.inputValue('.pay-form input[type="number"]')) !== "1500") fail("amount should be prefilled from the suggestion");
+  // the parsed amount prefills the input SILENTLY now (no "Dekontta bulunan" label shown) - only a duplicate warning would render in .pay-parsed
+  await page.waitForFunction(() => document.querySelector('.pay-form input[type="number"]')?.value === "1500");
   await page.screenshot({ path: `${SHOTS}/admin-user.png`, fullPage: true });
   await page.click(".pay-form .btn.primary");
   await page.waitForSelector(".kalan.clear");
@@ -183,7 +192,8 @@ try {
   await page.waitForSelector(".kalan.clear");
   await page.screenshot({ path: `${SHOTS}/billing-paid.png`, fullPage: true });
 
-  // Admin: receipts (2 cards: the API smoke's hand-recorded part-payment + the one just saved), inline PDF embed, fees, settings
+  // Admin: receipts (4 cards this month: API smoke's Smoke Üye pending-upload + hand-recorded part-payment, and this
+  // browser run's Yönetici rejected-upload + the payment just saved), inline PDF embed, fees, settings
   await page.click(".tab:has-text('Yönetim')");
   await page.click(".subtabs button:has-text('Ödemeler')");
   // default view = current month + EVERYONE: the overview lists every member with their outstanding and a grand total
@@ -193,7 +203,7 @@ try {
   if (!(await page.textContent(".owe-total")).includes("₺")) fail("overview total row should show a sum");
   await page.screenshot({ path: `${SHOTS}/admin-overview.png`, fullPage: true });
   await page.waitForSelector(".a-rcpt");
-  if ((await page.$$eval(".a-rcpt", (e) => e.length)) !== 2) fail("expected 2 receipts in admin list");
+  if ((await page.$$eval(".a-rcpt", (e) => e.length)) !== 4) fail("expected 4 receipts in admin list");
   // a row drills into the same per-user detail as Üyeler, then back
   await page.click(".owe-list .owe-row >> nth=0");
   await page.waitForSelector(".pay-form, .bill-list");

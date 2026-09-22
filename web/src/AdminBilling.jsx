@@ -17,12 +17,47 @@ export function useToast() {
   return [say, <div key="toast" className={"toast" + (msg ? " show" : "")} role="status">{msg}</div>];
 }
 
+/** A member's own upload, not yet reviewed: no charges/amount picked yet, so approve here means "record the payment
+ *  now" (the admin types the amount; default = every unpaid item of the receipt's upload month) rather than just
+ *  flipping a flag. Reject just closes it out (-> mismatch, no allocation), same as any other rejected receipt. */
+function PendingReceiptCard({ r, onReview, showUser = true }) {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const approve = async () => { setBusy(true); try { await onReview(r, "approve", note, { amount_try: Number(amount) }); setNote(""); } finally { setBusy(false); } };
+  const reject = async () => { setBusy(true); try { await onReview(r, "reject", note); setNote(""); } finally { setBusy(false); } };
+  return (
+    <li className="card a-rcpt">
+      <div className="a-rcpt-top">
+        <span><b>{showUser ? r.user_name : monthLabel(r.month)}</b>{showUser && <span className="muted small"> · {monthLabel(r.month)}</span>}</span>
+        <StatusPill flag="pending" />
+      </div>
+      <p className="rcpt-msg">{A.pendingHint}</p>
+      <div className="muted small">{r.filename} · {fmtDateTimeShort(r.uploaded_at)}</div>
+      <div className="review">
+        <input type="number" min="1" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={A.pay.amount} aria-label={A.pay.amount} style={{ maxWidth: "8rem" }} />
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={A.notePh} aria-label={A.notePh} />
+        <button className="btn good" disabled={busy || !(Number(amount) > 0)} onClick={approve}>{A.approve}</button>
+        <button className="btn danger" disabled={busy} onClick={reject}>{A.reject}</button>
+      </div>
+      <p className="hint">{A.reviewHint}</p>
+      <div className="row wrap">
+        <button className="btn sm ghost" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "PDF'i gizle" : "PDF'i göster"}</button>
+        <a className="link" href={`/api/receipts/${r.id}/pdf`} target="_blank" rel="noreferrer">{A.openPdf}</a>
+      </div>
+      {open && <embed className="embed" src={`/api/receipts/${r.id}/pdf`} type="application/pdf" title={r.filename || "Dekont"} />}
+    </li>
+  );
+}
+
 /** Receipt card: extracted amount next to expected, inline PDF, approve / reject with an optional note. */
 function ReceiptCard({ r, onReview, showUser = true }) {
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const review = async (action) => { setBusy(true); try { await onReview(r, action, note); setNote(""); } finally { setBusy(false); } };
+  if (r.status === "pending") return <PendingReceiptCard r={r} onReview={onReview} showUser={showUser} />;
   const found = r.found_try ?? r.amounts[0];
   const off = found != null && Math.round(found * 100) !== Math.round(r.expected_try * 100); // no PDF (cash) is not "wrong"
   return (
@@ -55,6 +90,7 @@ function ReceiptCard({ r, onReview, showUser = true }) {
         <button className="btn good" disabled={busy || (r.status === "ok" && r.admin_note != null)} onClick={() => review("approve")}>{A.approve}</button>
         <button className="btn danger" disabled={busy || (r.status !== "ok" && r.admin_note != null)} onClick={() => review("reject")}>{A.reject}</button>
       </div>
+      <p className="hint">{A.reviewHint}</p>
       <div className="row wrap">
         <button className="btn sm ghost" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "PDF'i gizle" : "PDF'i göster"}</button>
         <a className="link" href={`/api/receipts/${r.id}/pdf`} target="_blank" rel="noreferrer">{A.openPdf}</a>
@@ -64,7 +100,7 @@ function ReceiptCard({ r, onReview, showUser = true }) {
   );
 }
 
-const STATUS_OPTS = ["ok", "mismatch", "unreadable", "duplicate"];
+const STATUS_OPTS = ["ok", "mismatch", "unreadable", "duplicate", "pending"];
 
 const O = A.overview;
 
@@ -138,9 +174,9 @@ export function Payments({ onDetail }) {
     api("GET", "/admin/receipts" + (q ? "?" + q : "")).then(setList, (e) => setLoadErr(e.message || tr.err.load));
   };
   useEffect(load, [f, month, allMonths]); // eslint-disable-line react-hooks/exhaustive-deps
-  const review = async (r, action, note) => {
+  const review = async (r, action, note, extra) => {
     try {
-      const upd = await api("POST", `/admin/receipts/${r.id}/${action}`, { note });
+      const upd = await api("POST", `/admin/receipts/${r.id}/${action}`, { note, ...extra });
       setList((l) => l.map((x) => (x.id === r.id ? upd : x)));
       loadOv();
       say(action === "approve" ? A.approved : A.rejected);
@@ -241,12 +277,9 @@ function RecordPayment({ userId, month, sel, outstanding, onSaved, say }) {
         )}
       </div>
       {busy && file && !parsed && <p className="pay-parsed"><span className="spin" /> {A.pay.reading}</p>}
-      {parsed && (
-        <p className={"pay-parsed" + (parsed.duplicate ? " warn" : "")}>
-          {parsed.found_try == null ? A.pay.foundNone : A.pay.found(fmtTRY(parsed.found_try))}
-          {parsed.duplicate ? ` ${A.pay.dupWarn}` : ""}
-        </p>
-      )}
+      {/* the parsed amount silently prefills the input above (see the useEffect on `outstanding` / pick()) - no raw
+          "found in the dekont" label is shown; only a duplicate warning, which the admin needs to act on */}
+      {parsed?.duplicate && <p className="pay-parsed warn">{A.pay.dupWarn}</p>}
       <div className="filters" style={{ marginBottom: 0 }}>
         <label className="field"><span>{A.pay.amount}</span>
           <input type="number" min="1" step="1" required value={amount} onChange={(e) => { typed.current = true; setAmount(e.target.value); }} />
@@ -279,7 +312,7 @@ export function UserDetail({ user, onBack }) {
   useEffect(() => { load(); api("GET", `/admin/users/${user.id}/reservations`).then(setRes, () => {}); }, [user.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const waive = async (it, waived) => { try { await api("POST", `/admin/charges/${it.id}/waive`, { waived }); say(waived ? A.waived : A.unwaive); load(data.month); } catch (e) { say(e.message); } };
-  const review = async (r, action, note) => { try { await api("POST", `/admin/receipts/${r.id}/${action}`, { note }); say(action === "approve" ? A.approved : A.rejected); load(data.month); } catch (e) { say(e.message); } };
+  const review = async (r, action, note, extra) => { try { await api("POST", `/admin/receipts/${r.id}/${action}`, { note, ...extra }); say(action === "approve" ? A.approved : A.rejected); load(data.month); } catch (e) { say(e.message); } };
   const [settle, setSettle] = useState({ amount: "", note: "" });
   const settleCredit = async (e) => {
     e.preventDefault();
@@ -347,10 +380,14 @@ export function UserDetail({ user, onBack }) {
         <ul className="card plain-list">
           {res.map((r) => (
             <li key={r.id} className={r.cancelled_at ? "gone" : ""}>
-              <span>{fmtDateTimeShort(r.start_ms)}{r.note ? ` · ${r.note}` : ""}{r.cancelled_at ? ` (${A.cancelledRes})` : ""}</span>
-              <span className="num">{r.booker_name}</span>
+              <span>{fmtDateTimeShort(r.start_ms)}{r.note ? ` · ${r.note}` : ""} · {tr.cal.peopleCount(r.people)}{r.cancelled_at ? ` (${A.cancelledRes})` : ""}</span>
+              <span className="num">{fmtTRY(r.charge_try ?? 0)}</span>
             </li>
           ))}
+          <li className="total">
+            <span>{A.resTotal}</span>
+            <span className="num amount">{fmtTRY(res.filter((r) => !r.cancelled_at).reduce((s, r) => s + (r.charge_try ?? 0), 0))}</span>
+          </li>
         </ul>
       )}
       {toast}

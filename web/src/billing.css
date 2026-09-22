@@ -103,6 +103,8 @@ a.link:hover { text-decoration: underline; filter: brightness(1.1); }
 .plain-list li + li { border-top: 1px solid var(--line); }
 .plain-list .num { color: var(--muted); font-variant-numeric: tabular-nums; }
 .plain-list li.gone { color: var(--muted); text-decoration: line-through; }
+.plain-list li.total { background: var(--surface2); font-weight: 700; }
+.plain-list li.total .num { color: var(--text); }
 .fee-now { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); padding: var(--s-4); margin-bottom: var(--s-4); }
 .fee-now small { display: block; color: var(--muted); font-size: var(--fs-1); font-weight: 600; }
 .fee-now b { font: 700 var(--fs-5) var(--font-display); font-variant-numeric: tabular-nums; }

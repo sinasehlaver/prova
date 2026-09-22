@@ -25,8 +25,8 @@ export async function seed(db, { demo = false, adminToken, adminName = "Yönetic
   const token = adminToken || newToken();
   const add = (name, role, tok) =>
     db.execute({
-      sql: "INSERT INTO users (name, phone, role, invite_token, joined_month, created_at) VALUES (?,?,?,?,?,?)",
-      args: [name, null, role, tok, month, Date.now()],
+      sql: "INSERT INTO users (name, phone, email, password_hash, role, invite_token, joined_month, created_at) VALUES (?,?,?,?,?,?,?,?)",
+      args: [name, null, null, null, role, tok, month, Date.now()],
     });
   await add(adminName, "admin", token);
   if (demo) for (const n of ["Ali Yılmaz", "Zeynep Kaya", "Can Demir"]) await add(n, "member", newToken());

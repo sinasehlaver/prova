@@ -1,4 +1,5 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
+import { subtle } from "node:crypto";
 
 export const COOKIE = "prova_session";
 export const newToken = () => randomBytes(24).toString("base64url");
@@ -10,6 +11,56 @@ const readCookie = (req, name) => {
   }
   return null;
 };
+
+/** Hash a password using PBKDF2 (Web Crypto API, no deps). Returns "pbkdf2$iterations$salt$hash" (base64url). */
+export async function hashPassword(password) {
+  const salt = randomBytes(16);
+  const iterations = 120_000;
+  const key = await subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    { name: "PBKDF2" },
+    false,
+    ["deriveBits"]
+  );
+  const bits = await subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+    key,
+    256
+  );
+  const hash = Buffer.from(bits).toString("base64url");
+  return `pbkdf2$${iterations}$${Buffer.from(salt).toString("base64url")}$${hash}`;
+}
+
+/** Verify a password against a stored hash. Returns true/false. */
+export async function verifyPassword(password, storedHash) {
+  if (!storedHash || !storedHash.startsWith("pbkdf2$")) return false;
+  const parts = storedHash.split("$");
+  if (parts.length !== 4) return false;
+  const [, iterationsStr, saltB64, hashB64] = parts;
+  const iterations = Number(iterationsStr);
+  if (!iterations || !saltB64 || !hashB64) return false;
+  const salt = Buffer.from(saltB64, "base64url");
+  const expectedHash = Buffer.from(hashB64, "base64url");
+  try {
+    const key = await subtle.importKey(
+      "raw",
+      new TextEncoder().encode(password),
+      { name: "PBKDF2" },
+      false,
+      ["deriveBits"]
+    );
+    const bits = await subtle.deriveBits(
+      { name: "PBKDF2", salt, iterations, hash: "SHA-256" },
+      key,
+      256
+    );
+    const actualHash = Buffer.from(bits);
+    return timingSafeEqual(actualHash, expectedHash);
+  } catch {
+    return false;
+  }
+}
 
 /** Session cookie == the user's invite_token; regenerating the token logs the old device out. */
 export const authMiddleware = (db) => async (req, _res, next) => {
@@ -43,5 +94,8 @@ export const requireAdmin = (req, res, next) =>
 export const clearSessionCookie = (req, res) =>
   res.clearCookie(COOKIE, { httpOnly: true, sameSite: "lax", secure: req.secure, path: "/" });
 
-export const setSessionCookie =(req, res, token) =>
+export const setSessionCookie = (req, res, token) =>
   res.cookie(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 400 * 24 * 3600_000, path: "/" });
+
+/** Normalize email for case-insensitive comparison. */
+export const normEmail = (e) => String(e ?? "").trim().toLowerCase();

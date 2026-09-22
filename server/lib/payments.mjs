@@ -1,14 +1,20 @@
 // Receipt (dekont) flow on top of billing: store a member's dekont and tick the charges it pays.
 //
-// The self-serve member upload with AUTOMATIC verification is switched off (2026-09-22). Payments are recorded by an
-// admin: `recordPayment` stores the PDF and applies the amount the ADMIN typed. The parser (lib/receipt.mjs) is kept,
-// but only as an aid - `parseReceipt` is a read-only "does this PDF match?" suggestion that stores nothing and decides
-// nothing. Under/over payment, part-payments and credit all still go through the same allocation as before, so
-// monthView / creditBalance keep their invariants; only the source of the number changed (parser -> admin).
+// AUTOMATIC verification is (and stays) off. Payments are decided by an admin, either way they reach the system:
+//  - admin-initiated: `recordPayment` stores a PDF (optional) and applies the amount the ADMIN typed.
+//  - member-initiated (re-enabled 2026-09-22, admin-approval-only): `submitReceipt` stores the member's PDF as a
+//    status='pending' row - no amount, no charge, no effect on any balance until an admin reviews it. `reviewReceipt`
+//    turns a pending row into 'ok' (approve: the admin types the amount, same allocation as recordPayment) or
+//    'mismatch' (reject: no allocation, a reason is shown to the member).
+// The parser (lib/receipt.mjs) is kept, but only as an aid - `parseReceipt` is a read-only "does this PDF match?"
+// suggestion that stores nothing and decides nothing; `submitReceipt` also only uses it to capture text/amounts for
+// later reference. Under/over payment, part-payments and credit all go through the same allocation, so monthView /
+// creditBalance keep their invariants; only the source of the number changed (parser -> admin, always).
 import { randomUUID } from "node:crypto";
 import { verifyReceipt, fmtAmount } from "./receipt.mjs";
 import { COVERED_SQL, ensureMonthRaw, fail, isMonth } from "./billing.mjs";
 import { serial } from "./serial.mjs";
+import { currentMonth } from "./tz.mjs";
 
 export const MAX_PDF = 5 * 1024 * 1024;
 
@@ -19,6 +25,7 @@ export async function getSettings(db) {
 
 /** Turkish status line derived from stored fields (no message column). Under/over payment text comes from applied/overpaid. */
 export function receiptMessage(r) {
+  if (r.status === "pending") return "Yönetici incelemesini bekliyor.";
   const amounts = JSON.parse(r.amounts_json || "[]");
   const exp = r.expected_try, applied = r.applied_try ?? exp, over = r.overpaid_try ?? 0;
   const under = r.status === "ok" && applied < exp;
@@ -131,7 +138,31 @@ export async function parseReceipt(db, { buffer, expectedTry = 0 }) {
 }
 
 /**
- * Admin records a payment by hand (the member-facing self-serve upload is off). `paidTry` is the ADMIN's number -
+ * Member self-serve upload (admin-approval-only): stores the PDF as status='pending' with NO amount and NO charge
+ * selection - it is invisible to every money calculation (COVERED_SQL / monthView / outstandingOverview all key off
+ * status='ok'; a pending row has no receipt_charges rows to begin with) until an admin reviews it via reviewReceipt.
+ * verifyReceipt is called purely to capture text/amounts/bank_ref for later reference - never to decide anything.
+ */
+export const submitReceipt = (db, user, { buffer, filename = null, now = Date.now() }) => serial(async () => {
+  if (!buffer?.length || buffer.subarray(0, 5).toString("latin1") !== "%PDF-") throw fail(400, "Lütfen dekontu PDF olarak yükle");
+  let v = null;
+  try { v = await verifyReceipt({ buffer, expectedTry: 0 }); } catch { /* best-effort metadata only, never blocks the upload */ }
+  let sha = `manual-${randomUUID()}`;
+  if (v?.sha256) {
+    const dup = (await db.execute({ sql: "SELECT id FROM receipts WHERE sha256 = ?1 OR sha256 LIKE ?1 || '#%'", args: [v.sha256] })).rows.length > 0;
+    sha = dup ? `${v.sha256}#${now}` : v.sha256; // sha256 is UNIQUE: a re-filed dekont keeps its own row under a suffixed hash
+  }
+  const { lastInsertRowid } = await db.execute({
+    sql: `INSERT INTO receipts (user_id, month, filename, pdf, sha256, text, amounts_json, bank_ref, status, expected_try, found_try, uploaded_at)
+          VALUES (?,?,?,?,?,?,?,?, 'pending', NULL, ?, ?)`,
+    args: [user.id, currentMonth(), String(filename ?? "").slice(0, 120) || null, buffer, sha,
+      v ? v.text.slice(0, 20000) : null, JSON.stringify(v?.foundAmounts ?? []), v?.bankRef ?? null, v?.found ?? null, now],
+  });
+  return Number(lastInsertRowid);
+});
+
+/**
+ * Admin records a payment by hand (or approves a member's own upload - see below). `paidTry` is the ADMIN's number -
  * the PDF, when given, is stored as evidence and parsed for metadata only (amounts / bank ref, never a decision).
  * chargeIds null = all of the month's unpaid items. expected = what is still OUTSTANDING on those charges.
  * The amount is then allocated exactly like before: oldest charge first, a charge turns paid only once fully
@@ -192,12 +223,50 @@ export const recordPayment = (db, user, { month, chargeIds = null, paidTry, buff
  *   On an already-ok receipt (e.g. a part-payment) it only records the note - use waive to forgive a remainder.
  * reject un-ticks (ok -> mismatch); its part-payments and overpayment stop counting (status no longer 'ok'), and charges another
  *   auto-verified receipt had completed thanks to them go back to unpaid if no longer fully covered.
+ *
+ * A 'pending' receipt (member self-serve upload, not yet reviewed) is a different shape: it has no charges picked and
+ * no amount yet, so it can't reuse the "NON-ok -> tick its own receipt_charges" path above (there are none). Reject
+ * is simple (-> 'mismatch', no allocation, same as any other rejected receipt). Approve needs `extra.paidTry` (the
+ * amount the admin read off the dekont) and optionally `extra.chargeIds` / `extra.month` (default: the receipt's own
+ * upload month, then every unpaid item of it) - from there it is EXACTLY recordPayment's allocation, just written
+ * into this row instead of inserting a new one (the member's own upload stays the paid record).
  */
-export const reviewReceipt = (db, id, action, note, now = Date.now()) => serial(async () => {
-  const r = (await db.execute({ sql: "SELECT id, status FROM receipts WHERE id = ?", args: [id] })).rows[0];
+export const reviewReceipt = (db, id, action, note, extra = {}, now = Date.now()) => serial(async () => {
+  const r = (await db.execute({ sql: "SELECT * FROM receipts WHERE id = ?", args: [id] })).rows[0];
   if (!r) throw fail(404, "Dekont bulunamadı");
   const text = String(note ?? "").trim().slice(0, 300);
   if (action !== "approve" && action !== "reject") throw fail(400, "Geçersiz işlem");
+
+  if (r.status === "pending") {
+    if (action === "reject") {
+      await db.execute({ sql: "UPDATE receipts SET status = 'mismatch', admin_note = ? WHERE id = ?", args: [text || "Reddedildi", id] });
+      return;
+    }
+    const month = isMonth(extra.month) ? extra.month : r.month;
+    if (!Number.isInteger(extra.paidTry) || extra.paidTry <= 0) throw fail(400, "Tutar pozitif tam sayı olmalı");
+    const user = (await db.execute({ sql: "SELECT * FROM users WHERE id = ?", args: [r.user_id] })).rows[0];
+    if (!user) throw fail(404, "Üye bulunamadı");
+    await ensureMonthRaw(db, user, month);
+    const unpaid = await outstandingRaw(db, user.id, month);
+    const picked = (extra.chargeIds ? unpaid.filter((c) => extra.chargeIds.includes(c.id)) : unpaid).filter((c) => c.need > 0);
+    if (extra.chargeIds && picked.length !== new Set(extra.chargeIds).size) throw fail(400, "Seçilen kalemlerden biri geçersiz ya da zaten ödenmiş");
+    if (!picked.length) throw fail(400, "Bu ay ödenecek kalem yok");
+    const expected = picked.reduce((s, c) => s + c.need, 0);
+    const tx = await db.transaction("write");
+    try {
+      await tx.execute({ sql: "UPDATE receipts SET month = ?, status = 'ok', expected_try = ?, admin_note = ? WHERE id = ?", args: [month, expected, text || "Yönetici onayladı", id] });
+      const { applied, over } = await allocateRaw(tx, id, { picked, others: unpaid.filter((u) => u.need > 0 && !picked.includes(u)), paidTry: extra.paidTry, paidBy: "admin" });
+      await tx.execute({ sql: "UPDATE receipts SET applied_try = ?, overpaid_try = ? WHERE id = ?", args: [applied, over, id] });
+      await tx.commit();
+    } catch (e) {
+      await tx.rollback().catch(() => {});
+      throw e;
+    } finally {
+      tx.close();
+    }
+    return;
+  }
+
   const tx = await db.transaction("write");
   try {
     if (action === "approve") {

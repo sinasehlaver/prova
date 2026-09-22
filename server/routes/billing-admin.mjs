@@ -7,7 +7,7 @@ import { getSettings, listReceipts, parseReceipt, recordPayment, reviewReceipt }
 import { currentMonth } from "../lib/tz.mjs";
 import { billingPayload, bodyBuf, guard, rawPdf } from "./billing.mjs";
 
-const STATUSES = ["ok", "mismatch", "unreadable", "duplicate"];
+const STATUSES = ["ok", "mismatch", "unreadable", "duplicate", "pending"];
 
 export default ({ db }) => {
   const r = Router();
@@ -25,7 +25,8 @@ export default ({ db }) => {
     if (!isMonth(month) || month > currentMonth()) throw fail(400, "Geçersiz ay");
     // materialise the current month's subscription charges first, like economicsSummary does - otherwise a member who
     // never opened their own page would show 0 owed. (ensureMonth serialises per user; past months are left as they are.)
-    const users = (await db.execute("SELECT * FROM users WHERE active = 1")).rows;
+    // Bootstrap admin excluded here too - outstandingOverview hides it, so there's no point ensuring its charge.
+    const users = (await db.execute("SELECT * FROM users WHERE active = 1 AND id <> (SELECT MIN(id) FROM users)")).rows;
     if (month === currentMonth()) for (const u of users) await ensureMonth(db, u, month);
     const joined = users.reduce((a, u) => (a && a < u.joined_month ? a : u.joined_month), null) ?? currentMonth();
     res.json({ ...(await outstandingOverview(db, month)), months: monthRange(joined < month ? joined : month, currentMonth()) });
@@ -43,9 +44,12 @@ export default ({ db }) => {
   r.post("/admin/receipts/parse", rawPdf, guard(async (req, res) => {
     res.json(await parseReceipt(db, { buffer: bodyBuf(req), expectedTry: Number(req.query.expected_try) || 0 }));
   }));
+  // extra.month/chargeIds/paidTry only matter for a PENDING (member-uploaded) receipt's approve - ignored otherwise.
   for (const action of ["approve", "reject"])
     r.post(`/admin/receipts/:id/${action}`, guard(async (req, res) => {
-      await reviewReceipt(db, Number(req.params.id), action, req.body?.note);
+      const b = req.body ?? {};
+      const chargeIds = b.charges == null ? null : (Array.isArray(b.charges) ? b.charges.map(Number) : String(b.charges).split(",").map(Number));
+      await reviewReceipt(db, Number(req.params.id), action, b.note, { month: b.month, chargeIds, paidTry: b.amount_try != null ? Number(b.amount_try) : undefined });
       res.json((await listReceipts(db, { id: Number(req.params.id) }))[0]);
     }));
 
@@ -59,11 +63,15 @@ export default ({ db }) => {
   r.get("/admin/users/:id/receipts", guard(async (req, res) => {
     res.json(await listReceipts(db, { userId: (await userOf(req.params.id)).id }));
   }));
+  // people + the booking charge's own SNAPSHOT amount (not a recomputed current fee - see lib/billing.mjs on charge
+  // snapshots). At most one 'booking' charge per reservation (addBookingCharges inserts exactly one); charge_try is
+  // null when the fee was 0 at booking time (no charge was ever inserted).
   r.get("/admin/users/:id/reservations", guard(async (req, res) => {
     const u = await userOf(req.params.id);
     const { rows } = await db.execute({
-      sql: `SELECT r.id, r.start_ms, r.end_ms, r.note, r.people, r.cancelled_at, b.name AS booker_name
+      sql: `SELECT r.id, r.start_ms, r.end_ms, r.note, r.people, r.cancelled_at, b.name AS booker_name, c.amount_try AS charge_try
             FROM reservations r JOIN users b ON b.id = r.booker_id
+            LEFT JOIN charges c ON c.reservation_id = r.id AND c.kind = 'booking'
             WHERE r.booker_id = ? ORDER BY r.start_ms DESC LIMIT 100`,
       args: [u.id],
     });

@@ -7,7 +7,7 @@ import { PlusIcon } from "./icons.jsx";
 export default function Members({ me, onDetail }) {
   const [users, setUsers] = useState(null);
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ name: "", phone: "", role: "member" });
+  const [form, setForm] = useState({ name: "", email: "", phone: "", role: "member" });
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const timer = useRef();
@@ -26,17 +26,13 @@ export default function Members({ me, onDetail }) {
     setBusy(true);
     try {
       await api("POST", "/users", form);
-      setForm({ name: "", phone: "", role: "member" });
+      setForm({ name: "", email: "", phone: "", role: "member" });
       setAdding(false);
       say(tr.members.created);
       load();
     } catch (err) { fail(err); } finally { setBusy(false); }
   };
-  // own token only (the server keeps this browser logged in); the list no longer carries anyone's invite token
-  const regen = async (u) => {
-    if (!confirm(tr.members.regenSelfConfirm)) return;
-    try { await api("POST", `/users/${u.id}/regenerate-invite`); say(tr.members.regenerated); } catch (e) { fail(e); }
-  };
+
   const decide = async (u, action) => {
     if (action === "reject" && !confirm(tr.members.rejectConfirm(u.name))) return;
     try {
@@ -46,8 +42,10 @@ export default function Members({ me, onDetail }) {
       window.dispatchEvent(new Event("prova:users")); // refreshes the admin tab's pending-count bubble
     } catch (e) { fail(e); }
   };
-  const toggle = async (u) => {
-    try { replace(await api("PATCH", `/users/${u.id}`, { active: !u.active })); } catch (e) { fail(e); }
+
+  const changeRole = async (u, newRole) => {
+    if (newRole === u.role) return;
+    try { replace(await api("PATCH", `/users/${u.id}`, { role: newRole })); say(tr.members.roleChanged); } catch (e) { fail(e); }
   };
 
   return (
@@ -64,12 +62,19 @@ export default function Members({ me, onDetail }) {
             <input autoFocus required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           </label>
           <label className="field">
+            <span>{tr.members.email}</span>
+            <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+          </label>
+          <label className="field">
             <span>{tr.members.phone}</span>
             <input inputMode="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
           </label>
-          <label className="check">
-            <input type="checkbox" checked={form.role === "admin"} onChange={(e) => setForm({ ...form, role: e.target.checked ? "admin" : "member" })} />
-            <span>{tr.members.makeAdmin}</span>
+          <label className="field">
+            <span>{tr.members.role}</span>
+            <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+              <option value="member">{tr.members.roleMember}</option>
+              <option value="admin">{tr.members.roleAdmin}</option>
+            </select>
           </label>
           <div className="row end">
             <button type="button" className="btn ghost" onClick={() => setAdding(false)}>{tr.members.cancel}</button>
@@ -89,7 +94,7 @@ export default function Members({ me, onDetail }) {
                 <div className="avatar" aria-hidden="true">{u.name.slice(0, 1).toLocaleUpperCase("tr")}</div>
                 <div className="member-main">
                   <div className="member-name">{u.name}<span className="chip accent">{tr.members.pendingBadge}</span></div>
-                  <div className="muted small">{tr.members.signedUp} {u.joined_month}{u.phone ? ` · ${u.phone}` : ""}</div>
+                  <div className="muted small">{tr.members.signedUp} {u.joined_month}{u.phone ? ` · ${u.phone}` : ""}{u.email ? ` · ${u.email}` : ""}</div>
                   <div className="row wrap actions">
                     <button className="btn sm good" onClick={() => decide(u, "approve")}>{tr.members.approve}</button>
                     <button className="btn sm danger" onClick={() => decide(u, "reject")}>{tr.members.reject}</button>
@@ -111,12 +116,17 @@ export default function Members({ me, onDetail }) {
                 {u.role === "admin" && <span className="chip accent">{tr.members.admin}</span>}
                 {!u.active && <span className="chip">{tr.members.inactive}</span>}
               </div>
-              <div className="muted small">{tr.members.since} {u.joined_month}{u.phone ? ` · ${u.phone}` : ""}</div>
+              <div className="muted small">{tr.members.since} {u.joined_month}{u.phone ? ` · ${u.phone}` : ""}{u.email ? ` · ${u.email}` : ""}</div>
               <div className="row wrap actions">
                 {onDetail && <button className="btn sm" onClick={() => onDetail(u)}>{tr.admin.detail}</button>}
-                {u.id === me.id && <button className="btn sm ghost" onClick={() => regen(u)}>{tr.members.regenSelf}</button>}
                 {u.id !== me.id && (
-                  <button className="btn sm ghost" onClick={() => toggle(u)}>{u.active ? tr.members.deactivate : tr.members.activate}</button>
+                  <label className="field-inline">
+                    <span className="muted small">{tr.members.role}</span>
+                    <select className="role-select" value={u.role} onChange={(e) => changeRole(u, e.target.value)}>
+                      <option value="member">{tr.members.roleMember}</option>
+                      <option value="admin">{tr.members.roleAdmin}</option>
+                    </select>
+                  </label>
                 )}
               </div>
             </div>
