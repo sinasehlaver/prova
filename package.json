@@ -1,0 +1,28 @@
+{
+  "name": "prova",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"node --watch server/index.mjs\" \"vite --config web/vite.config.js\"",
+    "build": "vite --config web/vite.config.js build",
+    "start": "node server/index.mjs",
+    "test": "node --test server/*.test.mjs",
+    "verify": "bash scripts/verify.sh"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.14.0",
+    "express": "^5.1.0",
+    "unpdf": "^1.8.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.2.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.11"
+  }
+}

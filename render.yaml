@@ -1,0 +1,23 @@
+# Render Blueprint (docs: https://render.com/docs/blueprint-spec). Free web service + Turso DB (external).
+# NOT deployed by anyone yet - see DEPLOY.md. Render free: spins down after 15 min idle (~1 min cold start), NO persistent disk,
+# so the database MUST be Turso (DATABASE_URL below); server/lib/db.mjs refuses to boot on Render with a file: DB.
+services:
+  - type: web
+    name: prova
+    runtime: node
+    plan: free
+    region: frankfurt          # closest to Turkey; create the Turso DB in fra too
+    buildCommand: npm ci --include=dev && npm run build   # vite is a devDependency
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION      # package.json says ">=20" (unbounded = "latest" on Render), so pin
+        value: "24"
+      - key: DATABASE_URL      # libsql://<db>-<org>.turso.io   (turso db show <db> --url)
+        sync: false
+      - key: DATABASE_AUTH_TOKEN   # turso db tokens create <db>
+        sync: false
+      - key: ADMIN_INVITE_TOKEN    # optional: choose the first admin's login token (URL-safe chars only) instead of reading it from the logs
+        sync: false
+      - key: ADMIN_NAME            # optional, default "Yönetici"
+        sync: false

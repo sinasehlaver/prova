@@ -1,0 +1,31 @@
+/* Top-bar identity button + profile sheet + login/signup/pending extras (own file: styles.css is shared with other work) */
+.who-btn {
+  display: inline-flex; align-items: center; gap: var(--s-2); min-height: 2.75rem; padding: 0 var(--s-3);
+  border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted);
+  font-size: var(--fs-2); font-weight: 600; max-width: 45vw;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease), transform 120ms var(--ease);
+}
+.who-btn > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who-btn:hover { background: var(--surface2); color: var(--text); border-color: var(--line); }
+.who-btn:active { transform: scale(0.97); }
+.who-btn:focus-visible { outline: none; box-shadow: var(--ring); }
+.who-avatar {
+  flex: none; width: 1.75rem; height: 1.75rem; border-radius: 50%; display: grid; place-items: center;
+  font-family: var(--font-display); font-weight: 700; font-size: var(--fs-2); background: var(--accent-tint); color: var(--accent);
+}
+.profile-facts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-3); margin: 0; padding: var(--s-3) var(--s-4); border-radius: var(--r-md); background: var(--surface2); }
+.profile-facts dt { font-size: var(--fs-1); color: var(--muted); font-weight: 600; }
+.profile-facts dd { margin: 2px 0 0; font-weight: 600; }
+.profile-actions { justify-content: space-between; }
+.notice.ok { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good); border: 1px solid color-mix(in srgb, var(--good) 40%, transparent); }
+
+/* Login: signup CTA, pending screen actions */
+.login-card .notice { margin: var(--s-3) 0; }
+.login-cta { width: 100%; margin: var(--s-4) 0; }
+.login-actions { justify-content: center; margin-top: var(--s-4); flex-wrap: wrap; }
+.signup-form { text-align: left; margin-top: var(--s-4); }
+
+/* Members: pending-approval queue */
+.pending-block { margin-bottom: var(--s-6); }
+.pending-title { display: flex; align-items: center; gap: var(--s-2); font-size: var(--fs-3); margin: 0 0 var(--s-3); }
+.member.pending { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: linear-gradient(0deg, var(--accent-tint), var(--accent-tint)), var(--surface); }

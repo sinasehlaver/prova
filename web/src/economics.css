@@ -1,0 +1,87 @@
+/* Admin > Ekonomi. Chart colours = validated categorical slots 1 (blue) + 2 (orange), light + dark steps (dataviz palette).
+   Series are never told apart by colour alone: dashed hollow bar / solid bar / line + dot, plus a legend and a table view. */
+.eco-chart {
+  --c-inc: #3987e5; --c-cost: #d95926;
+  padding: var(--s-4); margin-bottom: var(--s-4); display: grid; gap: var(--s-3);
+}
+:root[data-theme="light"] .eco-chart { --c-inc: #2a78d6; --c-cost: #eb6834; }
+@media (prefers-color-scheme: light) { :root:not([data-theme]) .eco-chart { --c-inc: #2a78d6; --c-cost: #eb6834; } }
+
+.eco .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.eco-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.eco-head h3 { font-size: var(--fs-3); }
+.eco-legend { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-4); list-style: none; margin: 0; padding: 0; font-size: var(--fs-1); font-weight: 600; color: var(--muted); }
+.eco-legend li { display: inline-flex; align-items: center; gap: var(--s-2); }
+.sw { display: inline-block; width: 14px; height: 10px; border-radius: 2px; }
+.sw-exp { border: 1.5px dashed var(--c-inc); background: transparent; }
+.sw-inc { background: var(--c-inc); }
+.sw-cost { position: relative; height: 2px; background: var(--c-cost); border-radius: 0; }
+.sw-cost::after { content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: var(--c-cost); box-shadow: 0 0 0 2px var(--surface); }
+
+.eco-svg { width: 100%; height: auto; display: block; overflow: visible; }
+.eco-svg text { font: 500 10px var(--font-text); font-variant-numeric: tabular-nums; fill: var(--muted); }
+.eco-svg .grid { stroke: var(--line); stroke-width: 1; }
+.eco-col { outline: none; cursor: pointer; }
+.eco-col .hit { fill: transparent; transition: fill var(--dur) var(--ease); }
+.eco-col:hover .hit { fill: color-mix(in srgb, var(--text) 5%, transparent); }
+.eco-col:focus-visible .hit { fill: var(--accent-tint); stroke: var(--accent); stroke-width: 1.5; rx: 6; }
+.eco-col.on text { fill: var(--text); font-weight: 700; }
+.b-exp { fill: color-mix(in srgb, var(--c-inc) 10%, transparent); stroke: var(--c-inc); stroke-width: 1.5; stroke-dasharray: 3 2.5; }
+.b-inc { fill: var(--c-inc); stroke: var(--surface); stroke-width: 2; paint-order: stroke; transition: opacity var(--dur) var(--ease); }
+.eco-col:not(.on) .b-inc { opacity: 0.82; }
+.l-cost { fill: none; stroke: var(--c-cost); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; pointer-events: none; }
+.d-cost { fill: var(--c-cost); stroke: var(--surface); stroke-width: 2; pointer-events: none; transition: r var(--dur) var(--ease); }
+
+.eco-read { display: grid; gap: var(--s-2); padding: var(--s-3); border-radius: var(--r-md); background: var(--bg); border: 1px solid var(--line); }
+.eco-read b { font: 700 var(--fs-2) var(--font-display); text-transform: capitalize; }
+.eco-read dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr)); gap: var(--s-2) var(--s-3); margin: 0; }
+.eco-read dt { font-size: var(--fs-1); font-weight: 600; color: var(--muted); }
+.eco-read dd { margin: 0; font: 700 var(--fs-3) var(--font-display); font-variant-numeric: tabular-nums; }
+.eco-read .neg dd, .eco-table .neg { color: var(--bad); }
+.eco-read .pos dd { color: var(--good); }
+
+.eco-tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r-md); }
+.eco-table { width: 100%; border-collapse: collapse; font-size: var(--fs-2); font-variant-numeric: tabular-nums; }
+.eco-table th, .eco-table td { padding: var(--s-2) var(--s-3); text-align: right; white-space: nowrap; }
+.eco-table thead th { font-size: var(--fs-1); color: var(--muted); font-weight: 600; }
+.eco-table th:first-child { text-align: left; text-transform: capitalize; font-weight: 600; }
+.eco-table tbody tr + tr > * { border-top: 1px solid var(--line); }
+.eco-table tbody tr { transition: background-color var(--dur) var(--ease); }
+.eco-table tbody tr:hover { background: var(--surface2); }
+
+.eco-sug { padding: var(--s-5); margin-bottom: var(--s-4); display: grid; gap: var(--s-3); background-image: linear-gradient(135deg, var(--accent-tint), transparent 70%); }
+.eco-sug h3 { font-size: var(--fs-2); color: var(--muted); font-weight: 600; }
+.eco-headline { font: 700 var(--fs-4) var(--font-display); letter-spacing: -0.01em; margin: 0; font-variant-numeric: tabular-nums; }
+.eco-sug .btn.primary { justify-self: start; }
+.eco-sub { font-size: var(--fs-2); font-weight: 600; color: var(--muted); margin: var(--s-2) 0 0; }
+.eco-alt { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.eco-ok { margin: 0; display: flex; gap: var(--s-2); font-weight: 600; color: var(--good); }
+.eco-caveat { padding-top: var(--s-2); border-top: 1px solid var(--line); }
+.eco-sug .hint { margin: 0; }
+
+.eco-list .eco-row { display: flex; align-items: center; gap: var(--s-2); transition: background-color var(--dur) var(--ease); }
+.eco-list .eco-row:hover { background: var(--surface2); }
+.eco-row-main { flex: 1; min-width: 0; display: grid; }
+.eco-row-main b { text-transform: capitalize; overflow-wrap: anywhere; }
+.eco-amt { font-weight: 600; white-space: nowrap; }
+.eco-edit { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.eco-edit input { width: 7rem; min-height: 2.75rem; padding: 0 var(--s-3); border-radius: var(--r-md); border: 1px solid var(--line); background: var(--bg); font-variant-numeric: tabular-nums; transition: border-color var(--dur) var(--ease); }
+.eco-edit input:hover { border-color: var(--muted); }
+.eco-edit input:focus-visible { border-color: var(--accent); }
+.eco-list .btn.sm { min-height: 2.75rem; }
+.btn.danger-text { color: var(--bad); }
+.btn.danger-text:hover:not(:disabled) { background: var(--bad-tint); }
+.eco-total { font-weight: 700; background: var(--surface2); border-radius: 0 0 var(--r-lg) var(--r-lg); }
+.eco-total b { font: 700 var(--fs-3) var(--font-display); }
+.eco-cat { display: grid; gap: var(--s-3); }
+.eco .filters > .field { min-width: 0; }
+.eco-list { margin-bottom: var(--s-3); }
+.field input[type="text"] { width: 100%; min-height: 2.75rem; padding: 0 var(--s-3); border-radius: var(--r-md); border: 1px solid var(--line); background: var(--bg); font-weight: 400; font-size: var(--fs-3); }
+
+@media (min-width: 900px) {
+  .eco { max-width: 44rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .eco-col .hit, .b-inc, .d-cost { transition: none; }
+}
+.eco-svg { max-width: 30rem; margin-inline: auto; } /* viewBox is 360 wide: keeps axis text near 13px on desktop instead of ~18px */

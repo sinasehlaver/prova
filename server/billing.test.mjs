@@ -1,0 +1,471 @@
+import { test, after } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { makeTestApp } from "./test-helpers.mjs";
+import { COOKIE } from "./lib/auth.mjs";
+import { ensureMonth, feeFor, nextMonth, setFee } from "./lib/billing.mjs";
+import { currentMonth } from "./lib/tz.mjs";
+
+const H = 3600_000;
+const t = await makeTestApp();
+after(() => t.close());
+
+const fx = (n) => readFileSync(new URL(`../fixtures/receipts/${n}`, import.meta.url));
+const M = currentMonth();
+const NEXT = nextMonth(M);
+const day = (n) => Math.ceil((Date.now() + 2 * H) / H) * H + n * 24 * H;
+const J = async (r) => r.json();
+const mk = async (name) => { // fresh member (own sub charge, no bookings)
+  const u = await J(await t.fetch("/api/users", { method: "POST", as: t.admin, body: { name } }));
+  return (await t.db.execute({ sql: "SELECT * FROM users WHERE id = ?", args: [u.id] })).rows[0];
+};
+const bill = async (as, month = M) => J(await t.fetch(`/api/billing?month=${month}`, { as }));
+const body = (file) => (file == null ? undefined : typeof file === "string" ? fx(file) : file);
+/** Admin records a payment for `u` (raw PDF body, optional). The self-serve member upload is switched off. */
+const record = (u, { month = M, charges, amount, file = null, name = typeof file === "string" ? file : undefined, note, as = t.admin } = {}) =>
+  fetch(`${t.base}/api/admin/users/${u.id}/receipts?month=${month}&amount_try=${amount}` +
+    `${charges ? `&charges=${charges.join(",")}` : ""}${name ? `&filename=${name}` : ""}${note ? `&note=${encodeURIComponent(note)}` : ""}`, {
+    method: "POST", headers: { "content-type": "application/pdf", cookie: `${COOKIE}=${as.invite_token}` }, body: body(file),
+  });
+/** Admin aid: parse a dekont without storing anything. */
+const parse = (file, expected = 0, as = t.admin) =>
+  fetch(`${t.base}/api/admin/receipts/parse?expected_try=${expected}`, {
+    method: "POST", headers: { "content-type": "application/pdf", cookie: `${COOKIE}=${as.invite_token}` }, body: body(file),
+  });
+const sub = (b) => b.items.find((i) => i.kind === "subscription");
+const admin = (path, opts = {}) => t.fetch("/api/admin" + path, { as: t.admin, ...opts });
+
+test("ensureMonth: idempotent, snapshot, active + joined_month only", async () => {
+  const u = await mk("Idem");
+  await ensureMonth(t.db, u, M); await ensureMonth(t.db, u, M); await ensureMonth(t.db, u, M);
+  const n = (await t.db.execute({ sql: "SELECT COUNT(*) n FROM charges WHERE user_id = ? AND kind = 'subscription'", args: [u.id] })).rows[0].n;
+  assert.equal(n, 1);
+  await ensureMonth(t.db, u, "2000-01"); // before joined_month
+  await ensureMonth(t.db, { ...u, id: 9999, active: 0 }, M); // inactive
+  assert.equal((await t.db.execute({ sql: "SELECT COUNT(*) n FROM charges WHERE user_id IN (?, 9999)", args: [u.id] })).rows[0].n, 1);
+  assert.equal((await bill(u)).items.length, 1);
+});
+
+test("charge snapshot survives a fee change; fees apply from a future month only", async () => {
+  const u = await mk("Snap");
+  const before = sub(await bill(u));
+  assert.equal(before.amount_try, 1500);
+  await assert.rejects(setFee(t.db, { effectiveFrom: M, subscriptionTry: 9, bookingTry: 9 }), /gelecek/);
+  const r = await admin("/fees", { method: "POST", body: { effective_from: NEXT, subscription_try: 2000, booking_try: 600 } });
+  assert.equal(r.status, 201);
+  assert.equal((await feeFor(t.db, M)).subscription_try, 1500);
+  assert.equal((await feeFor(t.db, NEXT)).subscription_try, 2000);
+  assert.equal(sub(await bill(u)).amount_try, 1500); // untouched
+  await ensureMonth(t.db, u, NEXT);
+  const next = (await t.db.execute({ sql: "SELECT amount_try FROM charges WHERE user_id = ? AND month = ?", args: [u.id, NEXT] })).rows[0];
+  assert.equal(next.amount_try, 2000);
+  assert.equal((await admin("/fees", { method: "POST", body: { effective_from: M, subscription_try: 1, booking_try: 1 } })).status, 400);
+  assert.equal((await admin("/fees", { method: "POST", body: { effective_from: NEXT, subscription_try: 1.5, booking_try: 1 } })).status, 400);
+  assert.equal((await t.fetch("/api/admin/fees", { as: t.member })).status, 403);
+  // put the fee back so later tests see 500 for a booking in the current month; NEXT row edited in place (same effective_from)
+  await admin("/fees", { method: "POST", body: { effective_from: NEXT, subscription_try: 1500, booking_try: 500 } });
+  assert.equal((await t.db.execute({ sql: "SELECT COUNT(*) n FROM fees WHERE effective_from = ?", args: [NEXT] })).rows[0].n, 1);
+});
+
+test("booking charge: ONE charge on the booker = people x fee, voided on cancel, kalan sums unpaid", async () => {
+  const a = await mk("Bir"), b = await mk("Iki");
+  const res = await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: day(1), hours: 2, people: 3 } });
+  assert.equal(res.status, 201);
+  const { id } = await J(res);
+  const rows = (await t.db.execute({ sql: "SELECT * FROM charges WHERE reservation_id = ?", args: [id] })).rows;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].user_id, a.id);
+  assert.equal(rows[0].kind, "booking");
+  assert.equal(rows[0].amount_try, 3 * 500);
+  assert.equal(rows[0].voided_at, null);
+  const month = rows[0].month;
+  const va = await bill(a, month);
+  const it = va.items.find((i) => i.kind === "booking");
+  assert.equal(it.reservation.people, 3);
+  assert.equal(va.kalan, va.items.reduce((s, i) => s + (i.status === "unpaid" ? i.amount_try : 0), 0));
+  assert.equal(va.kalan, (month === M ? 1500 : 0) + 1500);
+  assert.equal((await bill(b, month)).items.filter((i) => i.kind === "booking").length, 0); // nobody else is billed
+  assert.equal((await t.fetch(`/api/reservations/${id}`, { method: "DELETE", as: a })).status, 200);
+  const va2 = await bill(a, month);
+  assert.equal(va2.items.find((i) => i.kind === "booking").status, "voided");
+  assert.equal(va2.kalan, month === M ? 1500 : 0);
+  // a PAID booking charge survives the cancel
+  const r2 = await J(await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: day(3), hours: 1 } }));
+  const rcpt = (await t.db.execute({ sql: "INSERT INTO receipts (user_id, month, sha256, status, uploaded_at) VALUES (?,?,?,?,?)", args: [a.id, month, "x" + r2.id, "ok", 1] })).lastInsertRowid;
+  await t.db.execute({ sql: "UPDATE charges SET paid_receipt_id = ?, paid_by = 'admin' WHERE reservation_id = ?", args: [rcpt, r2.id] });
+  assert.equal((await t.fetch(`/api/reservations/${r2.id}`, { method: "DELETE", as: a })).status, 200);
+  assert.equal((await t.db.execute({ sql: "SELECT voided_at FROM charges WHERE reservation_id = ?", args: [r2.id] })).rows[0].voided_at, null);
+});
+
+test("failed reservation (overlap) leaves no charges behind", async () => {
+  const a = await mk("Roll");
+  const s = day(3);
+  assert.equal((await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: s, hours: 1 } })).status, 201);
+  const before = (await t.db.execute("SELECT COUNT(*) n FROM charges")).rows[0].n;
+  assert.equal((await t.fetch("/api/reservations", { method: "POST", as: t.member, body: { start_ms: s, hours: 1 } })).status, 409);
+  assert.equal((await t.db.execute("SELECT COUNT(*) n FROM charges")).rows[0].n, before);
+});
+
+test("member self-serve upload is switched off: anon 401, member/admin 403, nothing stored", async () => {
+  const u = await mk("Kapali");
+  assert.equal((await t.fetch(`/api/billing/receipts?month=${M}`, { method: "POST" })).status, 401);
+  const r = await t.fetch(`/api/billing/receipts?month=${M}`, { method: "POST", as: u, body: {} });
+  assert.equal(r.status, 403);
+  assert.match((await J(r)).error, /yöneticine/);
+  assert.equal((await t.fetch("/api/billing/receipts", { method: "POST", as: t.admin, body: {} })).status, 403);
+  // a real raw-PDF upload is refused too (the route never reads the body)
+  const raw = await fetch(`${t.base}/api/billing/receipts?month=${M}`, {
+    method: "POST", headers: { "content-type": "application/pdf", cookie: `${COOKIE}=${u.invite_token}` }, body: fx("enpara-1500.pdf"),
+  });
+  assert.equal(raw.status, 403);
+  const v = await bill(u);
+  assert.equal(v.receipts.length, 0);
+  assert.equal(v.kalan, 1500);
+});
+
+test("admin records a payment: exact amount ticks the selected charges (paid_by admin), pdf stored + viewable", async () => {
+  const u = await mk("Okey");
+  const b = await bill(u);
+  const r = await record(u, { charges: [sub(b).id], amount: 1500, file: "enpara-1500.pdf" });
+  assert.equal(r.status, 201);
+  const out = await J(r);
+  assert.equal(out.status, "ok");
+  assert.equal(out.duplicate, false);
+  assert.equal(out.applied_try, 1500);
+  assert.equal(out.remaining_try, 0);
+  assert.equal((await t.fetch(`/api/admin/users/${u.id}/receipts?amount_try=100`, { method: "POST", as: u })).status, 403); // members can't
+  const b2 = await bill(u);
+  assert.equal(sub(b2).status, "paid");
+  assert.equal(sub(b2).paid_by, "admin");
+  assert.equal(b2.kalan, 0);
+  assert.equal(b2.receipts.length, 1);
+  assert.equal(b2.receipts[0].charges.length, 1);
+  const row = (await t.db.execute({ sql: "SELECT * FROM receipts WHERE id = ?", args: [out.id] })).rows[0];
+  assert.equal(row.sha256.length, 64);
+  assert.equal(row.bank_ref, "FST2609031234567");
+  assert.equal(row.expected_try, 1500);
+  const pdf = await t.fetch(`/api/receipts/${out.id}/pdf`, { as: u });
+  assert.equal(pdf.status, 200);
+  assert.equal(pdf.headers.get("content-type"), "application/pdf");
+  assert.equal((await pdf.arrayBuffer()).byteLength, fx("enpara-1500.pdf").length);
+  assert.equal((await record(u, { amount: 1500, file: "isbank-1500.pdf" })).status, 400); // nothing left to pay
+});
+
+test("underpayment: part-payment counts, kalan shown; top-up over the rest = credit; reject/approve move the credit", async () => {
+  const u = await mk("Eksik");
+  const paid = await J(await record(u, { amount: 1000, file: "enpara-1000-mismatch.pdf" })); // 1.000 of 1.500
+  assert.equal(paid.status, "ok");
+  assert.equal(paid.applied_try, 1000);
+  assert.equal(paid.remaining_try, 500);
+  assert.match(paid.message, /1\.000,00 TL ödemene sayıldı\. Kalan: 500,00 TL/);
+  let v = await bill(u);
+  assert.equal(v.kalan, 500);
+  assert.equal(v.paid, 1000);
+  assert.equal(v.total, 1500);
+  assert.equal(sub(v).status, "unpaid"); // only fully covered charges turn paid
+  assert.equal(sub(v).paid_try, 1000);
+  assert.equal(sub(v).remaining_try, 500);
+  assert.equal(sub(v).flag, null);
+  assert.equal(v.credit.balance_try, 0);
+  assert.equal(v.receipts[0].remaining_try, 500);
+  assert.equal(v.receipts[0].message, paid.message);
+  assert.equal(v.receipts[0].charges[0].applied_try, 1000);
+
+  // pays 1.500 for the remaining 500 -> charge paid, 1.000 surplus = credit the community owes
+  const top = await J(await record(u, { amount: 1500, file: "papara-1500.pdf" }));
+  assert.equal(top.status, "ok");
+  assert.equal(top.expected_try, 500);
+  assert.equal(top.overpaid_try, 1000);
+  assert.match(top.message, /topluluk sana 1\.000,00 TL borçlu/);
+  v = await bill(u);
+  assert.equal(sub(v).status, "paid");
+  assert.equal(v.kalan, 0);
+  assert.equal(v.credit.balance_try, 1000);
+  const seen = await J(await admin(`/users/${u.id}/billing`)); // visible to admin too
+  assert.equal(seen.credit.balance_try, 1000);
+
+  // reject the top-up: its surplus stops counting, the part-payment stays -> 500 kalan again
+  await admin(`/receipts/${top.id}/reject`, { method: "POST", body: { note: "Yanlış" } });
+  v = await bill(u);
+  assert.equal(sub(v).status, "unpaid");
+  assert.equal(v.kalan, 500);
+  assert.equal(v.credit.balance_try, 0);
+  // rejecting the FIRST (part) receipt: nothing left covered
+  await admin(`/receipts/${paid.id}/reject`, { method: "POST", body: {} });
+  assert.equal((await bill(u)).kalan, 1500);
+  await admin(`/receipts/${paid.id}/approve`, { method: "POST", body: {} }); // approve = counts in full
+  v = await bill(u);
+  assert.equal(sub(v).status, "paid");
+  assert.equal(sub(v).paid_by, "admin");
+  assert.equal(v.credit.balance_try, 0);
+  // approve the surplus receipt again: covers the 0 still outstanding, its 1.000 overpayment is back
+  await admin(`/receipts/${top.id}/approve`, { method: "POST", body: {} });
+  assert.equal((await bill(u)).credit.balance_try, 1000);
+
+  // admin settles by hand: partial, then the rest; guards
+  assert.equal((await t.fetch(`/api/admin/users/${u.id}/credit/settle`, { method: "POST", as: u, body: {} })).status, 403);
+  assert.equal((await admin(`/users/${u.id}/credit/settle`, { method: "POST", body: { amount_try: 1001 } })).status, 400);
+  assert.equal((await admin(`/users/${u.id}/credit/settle`, { method: "POST", body: { amount_try: 1.5 } })).status, 400);
+  const part = await J(await admin(`/users/${u.id}/credit/settle`, { method: "POST", body: { amount_try: 400, note: "IBAN'a iade" } }));
+  assert.equal(part.settled_try, 400);
+  assert.equal(part.credit.balance_try, 600);
+  assert.equal(part.credit.settlements[0].note, "IBAN'a iade");
+  const rest = await J(await admin(`/users/${u.id}/credit/settle`, { method: "POST", body: {} })); // omitted = all
+  assert.equal(rest.settled_try, 600);
+  assert.equal(rest.credit.balance_try, 0);
+  assert.equal(rest.credit.settlements.length, 2);
+  assert.equal((await admin(`/users/${u.id}/credit/settle`, { method: "POST", body: {} })).status, 409);
+  assert.equal((await bill(u)).credit.balance_try, 0);
+});
+
+test("overpayment: surplus pays the month's other unpaid items first (oldest first); the parse suggestion is floored", async () => {
+  const u = await mk("Fazla");
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 500, note: "Anahtar" } });
+  const b = await bill(u);
+  const adj = b.items.find((i) => i.kind === "adjustment");
+  assert.equal(b.kalan, 2000);
+  const sug = await J(await parse("enpara-1500-50-kurus.pdf", 500));
+  assert.equal(sug.found_try, 1500.5);
+  assert.equal(sug.suggest_try, 1500); // 1.500,50 -> 1.500: sub-lira is never credited
+  // 1.500 TL recorded against the 500 item only: 500 to it, 1.000 spills onto the subscription
+  const out = await J(await record(u, { charges: [adj.id], amount: sug.suggest_try, file: "enpara-1500-50-kurus.pdf" }));
+  assert.equal(out.status, "ok");
+  assert.equal(out.expected_try, 500);
+  assert.equal(out.overpaid_try, 0);
+  assert.equal(out.applied_try, 1500);
+  const v = await bill(u);
+  assert.equal(v.items.find((i) => i.id === adj.id).status, "paid");
+  assert.equal(sub(v).status, "unpaid");
+  assert.equal(sub(v).paid_try, 1000);
+  assert.equal(v.kalan, 500);
+  assert.equal(v.credit.balance_try, 0);
+  assert.equal(v.receipts[0].charges.length, 2);
+});
+
+test("part-payment on a charge that is then waived becomes credit", async () => {
+  const u = await mk("Muaf2");
+  // a part-payment inserted by hand (exact same rows the upload writes) keeps this test independent of the fixture files
+  const rid = Number((await t.db.execute({
+    sql: "INSERT INTO receipts (user_id, month, sha256, status, expected_try, applied_try, uploaded_at) VALUES (?,?,?,?,?,?,?)", args: [u.id, M, "hand-part-" + u.id, "ok", 1500, 700, 1],
+  })).lastInsertRowid);
+  const s = sub(await bill(u));
+  await t.db.execute({ sql: "INSERT INTO receipt_charges (receipt_id, charge_id, applied_try) VALUES (?,?,?)", args: [rid, s.id, 700] });
+  let v = await bill(u);
+  assert.equal(v.kalan, 800);
+  assert.equal(v.credit.balance_try, 0);
+  await admin(`/charges/${s.id}/waive`, { method: "POST", body: {} });
+  v = await bill(u);
+  assert.equal(v.kalan, 0);
+  assert.equal(v.credit.balance_try, 700); // the community owes back what was paid toward a waived charge
+  await admin(`/charges/${s.id}/waive`, { method: "POST", body: { waived: false } });
+  assert.equal((await bill(u)).credit.balance_try, 0);
+});
+
+test("parse is a suggestion only: nothing is stored, nothing is decided", async () => {
+  const a = await mk("Mm");
+  // two candidate amounts on the dekont = ambiguous; the parser says so, the admin still types the number
+  const mm = await J(await parse("enpara-two-amounts.pdf", 1500));
+  assert.equal(mm.status, "mismatch");
+  assert.equal(mm.message, "PDF'te 1.000,00 TL, 800,00 TL bulundu, beklenen 1.500,00 TL");
+  assert.deepEqual(mm.amounts, [1000, 800]);
+  assert.equal(mm.suggest_try, 1000);
+  assert.equal(mm.duplicate, false);
+
+  const un = await J(await parse("scanned-no-text.pdf", 1500));
+  assert.equal(un.status, "unreadable");
+  assert.equal(un.suggest_try, null);
+
+  // "Okey" already paid with enpara-1500.pdf: re-filing it is flagged, and so is the same bank ref in other bytes
+  const dup = await J(await parse("enpara-1500.pdf", 1500));
+  assert.equal(dup.status, "duplicate");
+  assert.equal(dup.duplicate, true);
+  const changed = Buffer.concat([fx("enpara-1500.pdf"), Buffer.from("\n% tweak\n")]);
+  assert.equal((await J(await parse(changed, 1500))).duplicate, true);
+
+  const va = await bill(a); // three parses later: still nothing on the member's month
+  assert.equal(va.kalan, 1500);
+  assert.equal(va.receipts.length, 0);
+
+  assert.equal((await parse(Buffer.from("hello"), 1500)).status, 400); // not a PDF
+  assert.equal((await parse(Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.alloc(5.5 * 1024 * 1024)]), 1500)).status, 413);
+  assert.equal((await record(a, { amount: 1500, file: Buffer.from("hello") })).status, 400);
+
+  // the admin can record a flagged dekont anyway - it is stored under a suffixed hash and the warning comes back
+  const rec = await J(await record(a, { amount: 1500, file: "enpara-1500.pdf" }));
+  assert.equal(rec.duplicate, true);
+  assert.equal((await bill(a)).kalan, 0);
+  assert.match((await t.db.execute({ sql: "SELECT sha256 FROM receipts WHERE id = ?", args: [rec.id] })).rows[0].sha256, /#\d+$/);
+});
+
+test("manual record with no PDF (cash); overpayment still becomes credit; guards", async () => {
+  const u = await mk("Nakit");
+  const out = await J(await record(u, { amount: 2000, note: "Nakit ödendi" }));
+  assert.equal(out.status, "ok");
+  assert.equal(out.filename, null);
+  assert.equal(out.applied_try, 1500);
+  assert.equal(out.overpaid_try, 500);
+  assert.match(out.message, /Nakit ödendi/);
+  const v = await bill(u);
+  assert.equal(sub(v).status, "paid");
+  assert.equal(sub(v).paid_by, "admin");
+  assert.equal(v.kalan, 0);
+  assert.equal(v.credit.balance_try, 500);
+  assert.equal((await t.fetch(`/api/receipts/${out.id}/pdf`, { as: u })).status, 404); // nothing to show
+
+  // extra debt is still an adjustment, forgiving one is still a waive: no new money state was invented
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 300, note: "Anahtar" } });
+  assert.equal((await bill(u)).kalan, 300);
+
+  for (const amount of [0, -100, 1.5, undefined]) assert.equal((await record(u, { amount })).status, 400);
+  assert.equal((await record(u, { amount: 100, month: NEXT })).status, 400);
+  assert.equal((await record(u, { amount: 100, month: "bad" })).status, 400);
+  assert.equal((await record(u, { amount: 100, charges: [999999] })).status, 400);
+  assert.equal((await t.fetch("/api/admin/users/999999/receipts?amount_try=100", { method: "POST", as: t.admin })).status, 404);
+});
+
+test("members never see others' billing; admin sees any", async () => {
+  const a = await mk("Priv1"), b = await mk("Priv2");
+  await record(a, { amount: 1500, file: "ziraat-1500.pdf" });
+  const ra = (await bill(a)).receipts[0];
+  assert.equal((await t.fetch(`/api/admin/users/${a.id}/billing`, { as: b })).status, 403);
+  assert.equal((await t.fetch("/api/admin/receipts", { as: b })).status, 403);
+  assert.equal((await t.fetch(`/api/admin/users/${a.id}/reservations`, { as: b })).status, 403);
+  assert.equal((await t.fetch(`/api/receipts/${ra.id}/pdf`, { as: b })).status, 404);
+  assert.equal((await t.fetch(`/api/receipts/${ra.id}/pdf`)).status, 401);
+  assert.equal((await t.fetch(`/api/receipts/${ra.id}/pdf`, { as: t.admin })).status, 200);
+  const spoof = await J(await t.fetch(`/api/billing?month=${M}&user_id=${a.id}`, { as: b })); // ignored
+  assert.equal(sub(spoof).status, "unpaid");
+  assert.equal(spoof.receipts.length, 0);
+  assert.equal((await t.fetch("/api/billing", { as: b })).status, 200);
+  assert.equal((await t.fetch(`/api/billing?month=${NEXT}`, { as: b })).status, 400);
+  assert.equal((await t.fetch("/api/billing")).status, 401);
+  const seen = await J(await admin(`/users/${a.id}/billing`));
+  assert.equal(sub(seen).status, "paid");
+  const rs = await J(await admin(`/users/${a.id}/receipts`));
+  assert.equal(rs.length, 1);
+  assert.equal((await admin(`/users/999999/billing`)).status, 404);
+  assert.ok(Array.isArray(await J(await admin(`/users/${a.id}/reservations`))));
+});
+
+test("admin undo: reject un-ticks a recorded payment, approve puts it back in full; filters", async () => {
+  const u = await mk("Ovr");
+  const rec = await J(await record(u, { charges: [sub(await bill(u)).id], amount: 1500, file: "isbank-1500.pdf" }));
+  assert.equal(rec.status, "ok");
+  const list = await J(await admin(`/receipts?month=${M}&user_id=${u.id}&status=ok`));
+  assert.equal(list.length, 1);
+  assert.equal(list[0].expected_try, 1500);
+  assert.equal(list[0].found_try, 1500); // parsed, informational
+  assert.equal(list[0].overpaid_try, 0);
+  assert.equal(list[0].user_name, "Ovr");
+  assert.equal((await J(await admin(`/receipts?status=unreadable&user_id=${u.id}`))).length, 0);
+  assert.equal((await admin("/receipts?status=nope")).status, 400);
+  assert.equal((await t.fetch(`/api/admin/receipts/${rec.id}/approve`, { method: "POST", as: u })).status, 403);
+
+  const rj = await J(await admin(`/receipts/${rec.id}/reject`, { method: "POST", body: { note: "Yanlış hesap" } }));
+  assert.equal(rj.status, "mismatch");
+  assert.match(rj.message, /Yanlış hesap/);
+  const v = await bill(u);
+  assert.equal(sub(v).status, "unpaid");
+  assert.equal(v.kalan, 1500);
+  assert.equal(sub(v).flag, null); // admin-rejected: no "!" flag, message lives on the receipt
+  assert.equal((await J(await admin(`/receipts?status=mismatch&user_id=${u.id}`))).length, 1);
+
+  const ap = await J(await admin(`/receipts/${rec.id}/approve`, { method: "POST", body: {} }));
+  assert.equal(ap.status, "ok");
+  const v2 = await bill(u);
+  assert.equal(sub(v2).status, "paid");
+  assert.equal(sub(v2).paid_by, "admin");
+  assert.equal(v2.kalan, 0);
+  assert.equal((await admin("/receipts/99999/approve", { method: "POST", body: {} })).status, 404);
+});
+
+test("waive + adjustment: kalan follows; paid can't be waived", async () => {
+  const u = await mk("Waiv");
+  const s = sub(await bill(u));
+  assert.equal((await admin(`/charges/${s.id}/waive`, { method: "POST", body: {} })).status, 200);
+  let v = await bill(u);
+  assert.equal(sub(v).status, "waived");
+  assert.equal(v.kalan, 0);
+  assert.equal((await record(u, { amount: 1500, file: "enpara-1500.pdf" })).status, 400); // nothing to pay
+  await admin(`/charges/${s.id}/waive`, { method: "POST", body: { waived: false } });
+  assert.equal(sub(await bill(u)).status, "unpaid");
+
+  assert.equal((await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 250, note: "Anahtar kopyası" } })).status, 201);
+  v = await bill(u);
+  const adj = v.items.find((i) => i.kind === "adjustment");
+  assert.equal(adj.note, "Anahtar kopyası");
+  assert.equal(v.kalan, 1750);
+  for (const body of [{ month: M, amount_try: -5, note: "x" }, { month: M, amount_try: 5, note: " " }, { month: "bad", amount_try: 5, note: "x" }, { month: M, amount_try: 1.5, note: "x" }])
+    assert.equal((await admin(`/users/${u.id}/charges`, { method: "POST", body })).status, 400);
+  assert.equal((await t.fetch(`/api/admin/users/${u.id}/charges`, { method: "POST", as: u, body: { month: M, amount_try: 5, note: "x" } })).status, 403);
+
+  await record(u, { charges: [s.id], amount: 1500, file: "isbank-1500.pdf" });
+  assert.equal((await admin(`/charges/${s.id}/waive`, { method: "POST", body: {} })).status, 409);
+  assert.equal((await admin(`/charges/999999/waive`, { method: "POST", body: {} })).status, 404);
+});
+
+test("settings: validation, recipient check toggle", async () => {
+  assert.equal((await admin("/settings", { method: "PUT", body: { iban: "TR12", holder: "" } })).status, 400);
+  assert.equal((await admin("/settings", { method: "PUT", body: { iban: "", holder: "", requireRecipient: true } })).status, 400);
+  const ok = await admin("/settings", { method: "PUT", body: { iban: "tr00 0000 0000 0000 0000 0000 00", holder: "Başka Kişi", requireRecipient: true } });
+  assert.equal(ok.status, 200);
+  assert.equal((await J(ok)).iban, "TR" + "0".repeat(24));
+  const u = await mk("Rcp");
+  // the recipient check now only shapes the PARSE suggestion - it can no longer approve or block anything by itself
+  const out = await J(await parse("yapikredi-1500-en.pdf", 1500));
+  assert.equal(out.status, "mismatch");
+  assert.match(out.message, /alıcı/);
+  // toggle off -> the same file now reads as a match
+  await admin("/settings", { method: "PUT", body: { iban: "", holder: "", requireRecipient: false } });
+  assert.equal((await J(await parse("yapikredi-1500-en.pdf", 1500))).status, "ok");
+  assert.equal((await bill(u)).receipts.length, 0); // parsing stored nothing
+  assert.equal((await t.fetch("/api/admin/settings", { as: t.member })).status, 403);
+  const pay = await bill(u);
+  assert.deepEqual(pay.pay_to, { iban: "", holder: "" });
+});
+
+test("admin overview: every member, their outstanding and the grand total (default = current month, everyone)", async () => {
+  const ov = async (month) => J(await admin("/billing/overview" + (month ? `?month=${month}` : "")));
+  const u = await mk("Borç Aysel");
+  const base = (await ov()).users.find((x) => x.id === u.id);
+  const b = await bill(u);
+  assert.equal(base.outstanding_try, b.kalan); // same invariant as monthView's kalan
+  assert.equal(base.debt_try, b.kalan);
+  assert.ok(base.outstanding_try > 0);
+
+  // defaults: no query params = current month, and EVERY active member is listed (not just the ones who owe)
+  let o = await ov();
+  assert.equal(o.month, M);
+  assert.equal(o.total_outstanding_try, o.users.reduce((s, x) => s + x.outstanding_try, 0));
+  assert.equal(o.total_debt_try, o.users.reduce((s, x) => s + x.debt_try, 0));
+  assert.ok(o.total_outstanding_try >= o.users.find((x) => x.id === u.id).outstanding_try);
+  assert.equal(o.owing_count, o.users.filter((x) => x.debt_try > 0).length);
+  const active = (await t.db.execute("SELECT id FROM users WHERE active = 1")).rows;
+  for (const a of active) assert.ok(o.users.some((x) => x.id === a.id), `user ${a.id} missing from the overview`);
+  assert.ok(o.months.includes(M));
+
+  // part-payment shrinks the member's outstanding by exactly what was applied
+  const s = sub(b);
+  await record(u, { charges: [s.id], amount: 500 });
+  o = await ov();
+  assert.equal(o.users.find((x) => x.id === u.id).outstanding_try, base.outstanding_try - 500);
+
+  // an older unpaid month carries over: debt_try counts it, the selected month's outstanding does not
+  const prev = `${+M.slice(0, 4) - 1}-${M.slice(5)}`;
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: prev, amount_try: 300, note: "Eski borç" } });
+  o = await ov();
+  const row = o.users.find((x) => x.id === u.id);
+  assert.equal(row.outstanding_try, base.outstanding_try - 500);
+  assert.equal(row.debt_try, base.outstanding_try - 500 + 300);
+  assert.equal((await ov(prev)).users.find((x) => x.id === u.id).outstanding_try, 300);
+
+  // waived / voided charges are not owed
+  await admin(`/charges/${s.id}/waive`, { method: "POST", body: { waived: true } });
+  o = await ov();
+  assert.equal(o.users.find((x) => x.id === u.id).outstanding_try, (await bill(u)).kalan);
+
+  // guards
+  assert.equal((await admin("/billing/overview?month=bad")).status, 400);
+  assert.equal((await admin(`/billing/overview?month=${NEXT}`)).status, 400);
+  assert.equal((await t.fetch("/api/admin/billing/overview", { as: t.member })).status, 403);
+});

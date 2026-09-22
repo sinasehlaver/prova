@@ -1,0 +1,10 @@
+node_modules
+web/dist
+*.db
+*.db-*
+.env
+.env.*
+.DS_Store
+
+# real bank receipts (personal data) — never commit; synthetic ones live in fixtures/receipts/
+/receipts/
