@@ -13,6 +13,7 @@ after(() => t.close());
 const fx = (n) => readFileSync(new URL(`../fixtures/receipts/${n}`, import.meta.url));
 const M = currentMonth();
 const NEXT = nextMonth(M);
+const FAR = Array.from({ length: 13 }).reduce((m) => nextMonth(m), M); // current + 13 = one past the browse cap
 const day = (n) => Math.ceil((Date.now() + 2 * H) / H) * H + n * 24 * H;
 const J = async (r) => r.json();
 const mk = async (name) => { // fresh member (own sub charge, no bookings)
@@ -22,8 +23,8 @@ const mk = async (name) => { // fresh member (own sub charge, no bookings)
 const bill = async (as, month = M) => J(await t.fetch(`/api/billing?month=${month}`, { as }));
 const body = (file) => (file == null ? undefined : typeof file === "string" ? fx(file) : file);
 /** Admin records a payment for `u` (raw PDF body, optional). The self-serve member upload is switched off. */
-const record = (u, { month = M, charges, amount, file = null, name = typeof file === "string" ? file : undefined, note, as = t.admin } = {}) =>
-  fetch(`${t.base}/api/admin/users/${u.id}/receipts?month=${month}&amount_try=${amount}` +
+const record = (u, { month = M, charges, amount, file = null, name = typeof file === "string" ? file : undefined, note, fromCredit, as = t.admin } = {}) =>
+  fetch(`${t.base}/api/admin/users/${u.id}/receipts?month=${month}&amount_try=${amount}${fromCredit ? "&from_credit=1" : ""}` +
     `${charges ? `&charges=${charges.join(",")}` : ""}${name ? `&filename=${name}` : ""}${note ? `&note=${encodeURIComponent(note)}` : ""}`, {
     method: "POST", headers: { "content-type": "application/pdf", cookie: `${COOKIE}=${as.invite_token}` }, body: body(file),
   });
@@ -280,6 +281,37 @@ test("overpayment: surplus pays the month's other unpaid items first (oldest fir
   assert.equal(v.kalan, 500);
   assert.equal(v.credit.balance_try, 0);
   assert.equal(v.receipts[0].charges.length, 2);
+  // the admin card shows what was HANDED OVER and which items were the admin's pick vs. where the surplus went
+  const rc = v.receipts[0];
+  assert.equal(rc.paid_try, 1500);
+  assert.equal(rc.spill_try, 1000);
+  assert.equal(rc.has_pdf, true);
+  assert.deepEqual(rc.charges.map((c) => [c.id, c.selected, c.applied_try]), [[adj.id, true, 500], [sub(v).id, false, 1000]]);
+});
+
+test("reported case: fee waived, 200 extra picked, 500 paid in cash -> card says 500 paid, 300 owed back, no PDF", async () => {
+  const u = await mk("Sina2");
+  await admin(`/charges/${sub(await bill(u)).id}/waive`, { method: "POST", body: {} });
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 200, note: "bozuk mikrofon" } });
+  const mic = (await bill(u)).items.find((i) => i.kind === "adjustment");
+  const out = await J(await record(u, { charges: [mic.id], amount: 500 }));
+  assert.equal(out.expected_try, 200);
+  assert.equal(out.paid_try, 500);
+  assert.equal(out.applied_try, 200);
+  assert.equal(out.spill_try, 0);
+  assert.equal(out.overpaid_try, 300);
+  assert.equal(out.has_pdf, false);
+  assert.deepEqual(out.charges.map((c) => [c.id, c.selected]), [[mic.id, true]]);
+  assert.equal((await bill(u)).credit.balance_try, 300);
+});
+
+test("markSelected: picked rows come first; a 0 row (money ran out) is still picked; spill only after expected", async () => {
+  const { markSelected } = await import("./lib/payments.mjs");
+  const sel = (rows, exp) => markSelected(rows.map((applied_try) => ({ applied_try })), exp).map((c) => c.selected);
+  assert.deepEqual(sel([500, 1000], 500), [true, false]); // 500 picked, 1.000 spilled
+  assert.deepEqual(sel([300, 0], 800), [true, true]); // under-payment: second pick got nothing
+  assert.deepEqual(sel([200, 300], 500), [true, true]); // exact
+  assert.deepEqual(sel([200, 300, 50], 500), [true, true, false]);
 });
 
 test("part-payment on a charge that is then waived becomes credit", async () => {
@@ -344,6 +376,8 @@ test("manual record with no PDF (cash); overpayment still becomes credit; guards
   assert.equal(out.filename, null);
   assert.equal(out.applied_try, 1500);
   assert.equal(out.overpaid_try, 500);
+  assert.equal(out.paid_try, 2000);
+  assert.equal(out.has_pdf, false); // the UI hides "PDF'i göster" instead of embedding a 404
   assert.match(out.message, /Nakit ödendi/);
   const v = await bill(u);
   assert.equal(sub(v).status, "paid");
@@ -377,7 +411,8 @@ test("members never see others' billing; admin sees any", async () => {
   assert.equal(sub(spoof).status, "unpaid");
   assert.equal(spoof.receipts.length, 0);
   assert.equal((await t.fetch("/api/billing", { as: b })).status, 200);
-  assert.equal((await t.fetch(`/api/billing?month=${NEXT}`, { as: b })).status, 400);
+  assert.equal((await t.fetch(`/api/billing?month=${NEXT}`, { as: b })).status, 200); // future months browsable (to current + 12)
+  assert.equal((await t.fetch(`/api/billing?month=${FAR}`, { as: b })).status, 400);
   assert.equal((await t.fetch("/api/billing")).status, 401);
   const seen = await J(await admin(`/users/${a.id}/billing`));
   assert.equal(sub(seen).status, "paid");
@@ -480,10 +515,12 @@ test("admin overview: every member, their outstanding and the grand total (defau
   assert.equal(o.total_debt_try, o.users.reduce((s, x) => s + x.debt_try, 0));
   assert.ok(o.total_outstanding_try >= o.users.find((x) => x.id === u.id).outstanding_try);
   assert.equal(o.owing_count, o.users.filter((x) => x.debt_try > 0).length);
-  // the bootstrap admin (lowest id, from seed - t.admin here) is a deploy-time secret account, not a real member:
-  // hidden from the overview and its totals, same as it's hidden from GET /users.
-  assert.ok(!o.users.some((x) => x.id === t.admin.id), "bootstrap admin must not appear in the overview");
-  const active = (await t.db.execute({ sql: "SELECT id FROM users WHERE active = 1 AND id <> ?", args: [t.admin.id] })).rows;
+  // the bootstrap admin (lowest id, from seed - t.boot) is an observer account, not a real member: hidden from the
+  // overview and its totals (same as GET /users) and never gets a charge. A real admin (t.admin) IS listed + billed.
+  assert.ok(!o.users.some((x) => x.id === t.boot.id), "bootstrap admin must not appear in the overview");
+  assert.ok(o.users.some((x) => x.id === t.admin.id), "a real (non-bootstrap) admin is a billable member");
+  assert.equal((await t.db.execute({ sql: "SELECT COUNT(*) n FROM charges WHERE user_id = ?", args: [t.boot.id] })).rows[0].n, 0);
+  const active = (await t.db.execute({ sql: "SELECT id FROM users WHERE active = 1 AND id <> ?", args: [t.boot.id] })).rows;
   for (const a of active) assert.ok(o.users.some((x) => x.id === a.id), `user ${a.id} missing from the overview`);
   assert.ok(o.months.includes(M));
 
@@ -509,7 +546,8 @@ test("admin overview: every member, their outstanding and the grand total (defau
 
   // guards
   assert.equal((await admin("/billing/overview?month=bad")).status, 400);
-  assert.equal((await admin(`/billing/overview?month=${NEXT}`)).status, 400);
+  assert.equal((await admin(`/billing/overview?month=${NEXT}`)).status, 200);
+  assert.equal((await admin(`/billing/overview?month=${FAR}`)).status, 400);
   assert.equal((await t.fetch("/api/admin/billing/overview", { as: t.member })).status, 403);
 });
 
@@ -527,4 +565,81 @@ test("admin per-user reservations: people + the booking charge's SNAPSHOT amount
   assert.equal(row2.people, 4);
   assert.equal(row2.charge_try, 4 * 500); // a cancelled reservation's charge is voided, not deleted - snapshot survives
   assert.ok(row2.cancelled_at);
+});
+
+test("future months: browsable to current + 12, planned rent is display-only (no charge row), past the cap = 400", async () => {
+  const u = await mk("Gelecek");
+  const b = await bill(u, NEXT);
+  assert.equal(b.month, NEXT);
+  assert.equal(b.future, true);
+  assert.ok(b.months.includes(NEXT) && !b.months.includes(FAR));
+  const planned = b.items.find((i) => i.kind === "subscription");
+  assert.deepEqual([planned.id, planned.key, planned.status, planned.amount_try], [null, `sub:${NEXT}`, "upcoming", 1500]);
+  assert.equal(b.projected_try, 1500);
+  assert.equal(b.kalan, 0); // kalan = real charges only
+  assert.equal(b.credit_cover, null); // no credit
+  const n = async (m) => (await t.db.execute({ sql: "SELECT COUNT(*) n FROM charges WHERE user_id = ? AND month = ?", args: [u.id, m] })).rows[0].n;
+  assert.equal(await n(NEXT), 0); // a READ never materialises a future month
+  assert.equal((await J(await admin(`/users/${u.id}/billing?month=${NEXT}`))).projected_try, 1500);
+  assert.equal((await admin(`/users/${u.id}/billing?month=${FAR}`)).status, 400);
+  // the current month offers next month's planned rent as an "other month" item for the payment composer
+  assert.ok((await bill(u)).other_open.some((i) => i.key === `sub:${NEXT}`));
+});
+
+test("one payment covers items across months: this month's extra + next month's rent (prepay materialises it)", async () => {
+  const u = await mk("Çokay");
+  await admin(`/charges/${sub(await bill(u)).id}/waive`, { method: "POST", body: {} });
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 200, note: "kablo" } });
+  const mic = (await bill(u)).items.find((i) => i.kind === "adjustment");
+  const other = await mk("Başkası");
+  assert.equal((await record(u, { charges: [sub(await bill(other)).id], amount: 100 })).status, 400); // not their charge
+  assert.equal((await record(u, { charges: [`sub:${M}`], amount: 100 })).status, 400); // current month isn't "planned"
+  assert.equal((await record(u, { charges: [`sub:${FAR}`], amount: 100 })).status, 400); // past the cap
+  assert.equal((await record(u, { charges: ["abc"], amount: 100 })).status, 400);
+  const out = await J(await record(u, { charges: [mic.id, `sub:${NEXT}`], amount: 1700 }));
+  assert.equal(out.expected_try, 1700);
+  assert.equal(out.applied_try, 1700);
+  assert.equal(out.overpaid_try, 0);
+  assert.deepEqual(out.charges.map((c) => [c.month, c.selected]), [[M, true], [NEXT, true]]);
+  const nb = await bill(u, NEXT);
+  assert.equal(sub(nb).status, "paid");
+  assert.equal(nb.projected_try, 0);
+  assert.ok(nb.receipts.some((r) => r.id === out.id)); // the receipt shows on the month it covers too
+  assert.equal((await bill(u)).credit.balance_try, 0);
+  assert.equal((await record(u, { charges: [`sub:${NEXT}`], amount: 100 })).status, 400); // already a charge (and paid)
+  // undo gives it back: next month's rent is unpaid again (the charge itself stays, with its snapshot)
+  await admin(`/receipts/${out.id}/reject`, { method: "POST", body: { note: "yanlış" } });
+  assert.equal(sub(await bill(u, NEXT)).status, "unpaid");
+});
+
+test("credit looks forward (display-only) and can pay a future month's rent explicitly (from_credit), undo restores it", async () => {
+  const u = await mk("Alacaklı");
+  await admin(`/charges/${sub(await bill(u)).id}/waive`, { method: "POST", body: {} });
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 200, note: "pedal" } });
+  const pedal = (await bill(u)).items.find((i) => i.kind === "adjustment");
+  await record(u, { charges: [pedal.id], amount: 1900 }); // 1700 surplus -> credit
+  assert.equal((await bill(u)).credit.balance_try, 1700);
+  const N2 = nextMonth(NEXT);
+  let c1 = (await bill(u, NEXT)).credit_cover, c2 = (await bill(u, N2)).credit_cover;
+  assert.deepEqual([c1.need_try, c1.covered_try], [1500, 1500]); // next month's rent fully covered by the credit
+  assert.deepEqual([c2.prior_try, c2.available_try, c2.covered_try], [1500, 200, 200]); // what's left after next month
+  assert.equal((await bill(u)).credit.balance_try, 1700); // nothing was applied by looking
+  assert.equal((await t.db.execute({ sql: "SELECT COUNT(*) n FROM charges WHERE user_id = ? AND month = ?", args: [u.id, NEXT] })).rows[0].n, 0);
+
+  assert.equal((await record(u, { month: NEXT, charges: [`sub:${NEXT}`], amount: 1800, fromCredit: true })).status, 400); // > credit
+  assert.equal((await record(u, { month: NEXT, charges: [`sub:${NEXT}`], amount: 1500, fromCredit: true, file: "ziraat-1500.pdf" })).status, 400); // no PDF
+  const out = await J(await record(u, { month: NEXT, charges: [`sub:${NEXT}`], amount: 1500, fromCredit: true }));
+  assert.equal(out.from_credit, true);
+  assert.equal(out.applied_try, 1500);
+  assert.equal(out.overpaid_try, 0);
+  assert.equal(sub(await bill(u, NEXT)).status, "paid");
+  assert.equal((await bill(u)).credit.balance_try, 200);
+  c2 = (await bill(u, N2)).credit_cover;
+  assert.deepEqual([c2.prior_try, c2.covered_try], [0, 200]);
+  await admin(`/receipts/${out.id}/reject`, { method: "POST", body: { note: "geri al" } });
+  assert.equal((await bill(u)).credit.balance_try, 1700);
+  assert.equal(sub(await bill(u, NEXT)).status, "unpaid");
+  await admin(`/receipts/${out.id}/approve`, { method: "POST", body: {} }); // redo: consumes the credit again
+  assert.equal((await bill(u)).credit.balance_try, 200);
+  assert.equal(sub(await bill(u, NEXT)).status, "paid");
 });

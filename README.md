@@ -1,4 +1,4 @@
-# prova
+# Yüzen Oda
 
 A phone-first web app for a community that shares one rehearsal room. It handles
 booking the room, splitting the monthly rent + per-booking fees fairly between
@@ -43,6 +43,12 @@ Admin login: http://localhost:4601/i/<token>
 
 Open that link in your browser — that's you, logged in as admin. From there you
 can approve new members, set fees, and configure the room.
+
+That first account is an **observer admin**: nobody else sees it in any list, it
+is never charged dues, and it can't book the room. It can still see every admin
+screen and promote members to admin. If you also play in the room, sign up a
+normal account for yourself and make it an admin. Details, plus how to check it
+on a live Render + Turso deploy: [`BOOTSTRAP-ADMIN.md`](./BOOTSTRAP-ADMIN.md).
 
 Want the app pre-filled with a handful of sample members and a month of demo
 data instead of starting empty? Run `SEED_DEMO=1 npm run dev` the first time.
@@ -96,11 +102,21 @@ automatically turned out to be unreliable, so a human always decides. If you
 paid more or less than expected, the app tracks the difference (as a "Kalan"
 balance owed, or a credit for next time) automatically once the admin records it.
 
+You can also flip forward to **future months** (up to 12 ahead) with the month
+arrows, even before anything is booked: you'll see bookings you already made
+for that month plus the expected monthly dues ("Planlanan aidat" — only an
+estimate until the month starts). If the community owes you money (a credit
+from overpaying), the page shows how much of that month it would cover, e.g.
+"next month's dues are already covered by your credit". That's a preview; it
+turns into "paid" once an admin applies the credit.
+
 ### Raising an alert
 
 Something out of stock or broken in the room (picks, cables, the amp)? Go to
-**Uyarılar** (Alerts) and tap the relevant button. It shows up as a banner for
-everyone until someone marks it resolved. Alerts open more than 2 days turn red.
+**Uyarılar** (Alerts) and tap the relevant button. It shows up for everyone as a
+small icon next to the app name at the top of every tab (tap it to see what it is
+and resolve it) until someone marks it resolved. Alerts open more than 2 days
+turn red. The **Uyarılar** tab itself still lists every open/past alert in full.
 
 ### Admin tools
 
@@ -109,11 +125,20 @@ Everything above, plus, under **Yönetim** (Admin):
 - **Üyeler** — approve/reject new sign-ups, see every member, regenerate a
   lost invite link.
 - **Ödemeler** — who owes what, this month and total, across the whole
-  community at a glance (the system account created at first boot doesn't
-  count as a member here); drill into any member to record a payment, waive a
-  charge, or add an extra one. Member-uploaded dekonts show up as "Onay
-  bekliyor" cards — approve (type the amount, it's applied) or reject (with a
-  reason) before they count toward anything.
+  community at a glance (the observer account created at first boot isn't a
+  member: it's never billed and isn't counted here or in Ekonomi); drill into any member to waive a charge, add an
+  extra one (**Ek ücret ekle**), then record a payment (**Ödeme kaydet**). The
+  payment form is a draft until you press **Ödemeyi onayla**: tick which open
+  items it covers, type the amount actually paid, and it shows live what's
+  left to pay or what the community will owe the member; a dekont PDF is
+  optional (cash is fine). One payment can cover items from other months too
+  (older debt, next month's bookings, or prepaying next month's dues, listed
+  under "Diğer aylar"), and **Alacaktan öde** spends the member's existing
+  credit on the ticked items instead of new money. Once saved it becomes a read-only green
+  "Kaydedildi" card: covered items, their total, the paid amount, the result,
+  and the PDF if there is one. Member-uploaded dekonts show up as the same
+  kind of draft ("Onay bekliyor") — pick the items + amount and approve, or
+  reject with a reason.
 - **Ücretler** — set the monthly dues and per-person booking fee (changes
   apply from next month, never retroactively).
 - **Ekonomi** — income vs. cost chart for the last 6 months, and a suggested
@@ -145,8 +170,9 @@ Not deployed yet. [`DEPLOY.md`](./DEPLOY.md) walks through the $0 setup
 
 ## Extra: the receipt verifier, standalone
 
-The bank-transfer-receipt parser that powers the admin's "suggest an amount"
-prompt also works as a plain CLI, independent of the app:
+The bank-transfer-receipt parser (the app no longer uses it to suggest an
+amount; it only keeps the dekont's bank ref for duplicate warnings) also works
+as a plain CLI, independent of the app:
 
 ```sh
 node receipt-check.mjs dekont.pdf 1500 [--iban TR..] [--name "Ad Soyad"]

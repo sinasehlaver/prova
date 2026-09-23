@@ -32,8 +32,11 @@ export function StatusPill({ status, flag, partial }) {
   return <span className={"pill " + tone}><Icon />{s[key] ?? key}</span>;
 }
 
+/** 'YYYY-MM' now in Istanbul (fixed UTC+3) - mirror of lib/tz.mjs currentMonth. */
+export const nowMonth = () => new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 7);
+
 export function itemTitle(it) {
-  if (it.kind === "subscription") return tr.billing.subscription;
+  if (it.kind === "subscription") return it.status === "upcoming" ? tr.billing.future.planned : tr.billing.subscription;
   if (it.kind === "adjustment") return it.note || tr.billing.adjustment;
   const r = it.reservation;
   return r ? `${tr.billing.booking} · ${dayTime.format(r.start_ms)}–${fmtTime(r.end_ms)}${r.people > 1 ? ` · ${tr.cal.peopleCount(r.people)}` : ""}` : tr.billing.booking;
@@ -41,22 +44,46 @@ export function itemTitle(it) {
 
 export function MonthNav({ month, months, onChange }) {
   const i = months.indexOf(month);
+  const future = month > nowMonth();
   return (
     <div className="mnav">
       <button className="icon-btn" disabled={i <= 0} onClick={() => onChange(months[i - 1])} aria-label={tr.billing.monthPrev}><ChevronLeftIcon /></button>
-      <strong aria-live="polite">{monthLabel(month)}</strong>
+      <strong aria-live="polite">{monthLabel(month)}{future && <span className="pill future">{tr.billing.future.badge}</span>}</strong>
       <button className="icon-btn" disabled={i < 0 || i >= months.length - 1} onClick={() => onChange(months[i + 1])} aria-label={tr.billing.monthNext}><ChevronRightIcon /></button>
     </div>
   );
 }
 
 export function KalanCard({ data }) {
-  const clear = data.kalan === 0;
+  const clear = data.kalan === 0 && !(data.projected_try > 0); // a future month's planned rent isn't "nothing to pay"
   return (
     <section className={"card kalan" + (clear ? " clear" : "")} aria-label={tr.billing.kalan}>
       <div className="kalan-label">{tr.billing.kalan}</div>
       <div className="kalan-amount amount">{clear ? <><CheckG width="22" height="22" />{tr.billing.allPaid}</> : fmtTRY(data.kalan)}</div>
-      <div className="kalan-sub"><span>{tr.billing.status.paid}: {fmtTRY(data.paid)}</span><span>{tr.billing.total}: {fmtTRY(data.total)}</span></div>
+      <div className="kalan-sub">
+        <span>{tr.billing.status.paid}: {fmtTRY(data.paid)}</span><span>{tr.billing.total}: {fmtTRY(data.total)}</span>
+        {data.projected_try > 0 && <span>{tr.billing.future.planned}: {fmtTRY(data.projected_try)}</span>}
+      </div>
+      {data.future && <p className="hint kalan-hint">{tr.billing.future.hint}</p>}
+    </section>
+  );
+}
+
+/**
+ * DISPLAY-ONLY: how much of this (current or future) month the member's existing credit would cover, after what it
+ * would first go to (older debt, earlier months' planned rent). Server-computed (creditOutlook); nothing is applied -
+ * an admin still settles it by hand ("Alacaktan öde"). Renders nothing when there's no credit or nothing to cover.
+ */
+export function CreditCover({ cover }) {
+  if (!cover || !(cover.need_try > 0) || !(cover.covered_try > 0)) return null;
+  const C = tr.billing.cover;
+  const full = cover.covered_try >= cover.need_try;
+  return (
+    <section className={"card cover" + (full ? " full" : "")} aria-label={full ? C.title : C.titlePart}>
+      <div className="cover-head"><CheckG width="18" height="18" /><b>{full ? C.title : C.titlePart}</b></div>
+      <p>{full ? C.full(fmtTRY(cover.need_try)) : C.part(fmtTRY(cover.covered_try), fmtTRY(cover.need_try))}</p>
+      {cover.prior_try > 0 && <p className="muted small">{C.prior(fmtTRY(cover.prior_try))}</p>}
+      <p className="muted small">{C.manual}</p>
     </section>
   );
 }
@@ -76,15 +103,15 @@ export function CreditCard({ credit, children }) {
 }
 
 /** Item list. selectable: unpaid rows become checkboxes (Set of ids in `selected`). extra(item) renders admin actions. */
-export function ItemList({ items, selectable, selected, onToggle, extra }) {
-  if (!items.length) return <EmptyState title={tr.empty.items[0]} body={tr.empty.items[1]} />;
+export function ItemList({ items, selectable, selected, onToggle, extra, empty = tr.empty.items }) {
+  if (!items.length) return <EmptyState title={empty[0]} body={empty[1]} />;
   return (
     <ul className="card bill-list">
       {items.map((it) => {
         const pick = selectable && it.status === "unpaid";
         const Row = pick ? "label" : "div";
         return (
-          <li key={it.id}>
+          <li key={it.key ?? it.id}>
             <Row className={`bill-item ${it.status}`} data-kind={it.kind}>
               {pick ? <input type="checkbox" checked={selected.has(it.id)} onChange={() => onToggle(it.id)} aria-label={itemTitle(it)} /> : <span className="bill-glyph" />}
               <div>
@@ -115,7 +142,7 @@ export function ReceiptRow({ r, children }) {
       </div>
       <p className="rcpt-msg">{r.message}</p>
       <div className="row wrap">
-        <a className="link" href={`/api/receipts/${r.id}/pdf`} target="_blank" rel="noreferrer">{tr.billing.view}</a>
+        {r.has_pdf && <a className="link" href={`/api/receipts/${r.id}/pdf`} target="_blank" rel="noreferrer">{tr.billing.view}</a>}
         <span className="muted small">{dayTime.format(r.uploaded_at)}</span>
       </div>
       {children}
@@ -183,11 +210,12 @@ export default function Billing() {
       <div className="page-head"><h2>{tr.billing.title}</h2></div>
       <MonthNav month={data.month} months={data.months} onChange={load} />
       <KalanCard data={data} />
+      <CreditCover cover={data.credit_cover} />
       <CreditCard credit={data.credit} />
       <PayTo pay_to={data.pay_to} onCopied={() => say(tr.billing.copied)} />
 
       <h3 className="sec-title">{tr.billing.items}</h3>
-      <ItemList items={data.items} />
+      <ItemList items={data.items} empty={data.future ? tr.billing.future.empty : undefined} />
 
       {/* two ways to pay, both admin-reviewed - nothing is decided automatically either way */}
       <section className="card howto" aria-label={tr.billing.howTitle}>

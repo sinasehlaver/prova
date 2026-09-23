@@ -4,6 +4,7 @@
 // (ensureMonth, waiveCharge, addAdjustment, setFee) are wrapped in serial() - don't call those from inside serial().
 import { serial } from "./serial.mjs";
 import { currentMonth, monthOf } from "./tz.mjs";
+import { BOOTSTRAP_ID_SQL, isBootstrap } from "./auth.mjs";
 
 export const fail = (status, error) => Object.assign(new Error(error), { status });
 export const isMonth = (m) => typeof m === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(m);
@@ -44,19 +45,48 @@ export const voidBookingCharges = (tx, reservationId, now) =>
     args: [now, reservationId],
   });
 
-/** Idempotent (unique index): the month's subscription charge for an active member, from joined_month on. */
+/** Idempotent (unique index): the month's subscription charge for an active member, from joined_month on.
+ *  Never for the bootstrap admin (observer account, not billed) - the WHERE makes that a no-op insert. */
 export async function ensureMonthRaw(db, user, month) {
   if (!user.active || user.joined_month > month) return;
   const { subscription_try } = await feeFor(db, month);
   await db.execute({
-    sql: "INSERT OR IGNORE INTO charges (user_id, month, kind, amount_try) VALUES (?, ?, 'subscription', ?)",
+    sql: `INSERT OR IGNORE INTO charges (user_id, month, kind, amount_try) SELECT ?1, ?2, 'subscription', ?3 WHERE ?1 <> ${BOOTSTRAP_ID_SQL}`,
     args: [user.id, month, subscription_try],
   });
 }
 export const ensureMonth = (db, user, month) => serial(() => ensureMonthRaw(db, user, month));
 
-/** Months a member can browse: joined_month .. current month (newest last). */
-export const browsableMonths = (user) => monthRange(user.joined_month, currentMonth());
+/** How far ahead a month can be browsed / prepaid (decided 2026-09-23): current + 12. */
+export const MAX_AHEAD = 12;
+export const maxMonth = () => {
+  let m = currentMonth();
+  for (let i = 0; i < MAX_AHEAD; i++) m = nextMonth(m);
+  return m;
+};
+/** Months a member can browse: joined_month .. current + MAX_AHEAD (newest last). Future months are read-only
+ *  projections - see billingPayload: a READ never materialises a future month's subscription charge. */
+export const browsableMonths = (user) => monthRange(user.joined_month, maxMonth());
+export const canBrowse = (user, month) => isMonth(month) && month >= user.joined_month && month <= maxMonth();
+
+/**
+ * Display-only "planned rent" for a FUTURE month that has no subscription charge yet: the fee in force for that month
+ * as of today. Never inserted by a read (a later setFee for that month must still apply - charges are snapshots);
+ * it becomes a real charge only when the month turns current (ensureMonth) or an admin explicitly prepays it
+ * (payment token `sub:YYYY-MM`, see lib/payments.mjs). null when not applicable.
+ */
+export async function projectedSub(db, user, month) {
+  if (!user.active || month <= currentMonth() || month < user.joined_month || month > maxMonth()) return null;
+  if (await isBootstrap(db, user)) return null; // observer account: never billed, no planned rent either
+  const has = (await db.execute({ sql: "SELECT 1 FROM charges WHERE user_id = ? AND month = ? AND kind = 'subscription'", args: [user.id, month] })).rows[0];
+  if (has) return null;
+  const { subscription_try } = await feeFor(db, month);
+  if (!(subscription_try > 0)) return null;
+  return {
+    id: null, key: `sub:${month}`, month, kind: "subscription", amount_try: subscription_try, status: "upcoming", paid_by: null, note: null,
+    paid_try: 0, remaining_try: subscription_try, flag: null, reservation: null,
+  };
+}
 
 /** SQL expr (alias `c` = charges): whole TRY already covered by ok receipts (part-payments). A charge turns 'paid' only once fully covered. */
 export const COVERED_SQL = `COALESCE((SELECT SUM(rc.applied_try) FROM receipt_charges rc JOIN receipts rr ON rr.id = rc.receipt_id
@@ -64,12 +94,45 @@ export const COVERED_SQL = `COALESCE((SELECT SUM(rc.applied_try) FROM receipt_ch
 
 const statusOf = (c) => (c.voided_at ? "voided" : c.waived_at ? "waived" : c.paid_receipt_id ? "paid" : "unpaid");
 
+const ITEM_SQL = `SELECT c.*, ${COVERED_SQL} AS covered, r.start_ms, r.end_ms, r.note AS r_note, r.people AS r_people, r.cancelled_at AS r_cancelled
+          FROM charges c LEFT JOIN reservations r ON r.id = c.reservation_id`;
+const toItem = (c, flag = null) => {
+  const status = statusOf(c);
+  const covered = status === "unpaid" ? Math.min(Number(c.covered), c.amount_try) : 0;
+  return {
+    id: c.id, key: String(c.id), month: c.month, kind: c.kind, amount_try: c.amount_try, status, paid_by: c.paid_by, note: c.note,
+    paid_try: status === "paid" ? c.amount_try : covered, remaining_try: status === "unpaid" ? c.amount_try - covered : 0,
+    flag: status === "unpaid" ? flag : null,
+    reservation: c.reservation_id ? { id: c.reservation_id, start_ms: c.start_ms, end_ms: c.end_ms, note: c.r_note, people: c.r_people, cancelled: !!c.r_cancelled } : null,
+  };
+};
+
+/**
+ * Still-open items of the user in OTHER months than `month` (older debt + already-created future charges, oldest month
+ * first), plus next month's planned rent when `month` isn't next month itself. Feeds the admin payment composer so ONE
+ * payment can cover items across months (e.g. this month's booking + next month's rent).
+ */
+export async function openElsewhere(db, user, month) {
+  const { rows } = await db.execute({
+    sql: `${ITEM_SQL} WHERE c.user_id = ? AND c.month <> ? AND c.month <= ?
+            AND c.voided_at IS NULL AND c.waived_at IS NULL AND c.paid_receipt_id IS NULL
+          ORDER BY c.month, CASE c.kind WHEN 'subscription' THEN 0 WHEN 'booking' THEN 1 ELSE 2 END, COALESCE(r.start_ms, 0), c.id`,
+    args: [user.id, month, maxMonth()],
+  });
+  const items = rows.map((c) => toItem(c)).filter((i) => i.remaining_try > 0);
+  const next = nextMonth(currentMonth());
+  const planned = next !== month ? await projectedSub(db, user, next) : null;
+  if (planned) {
+    const at = items.findIndex((i) => i.month >= next); // rent first within its month, like monthView's order
+    items.splice(at < 0 ? items.length : at, 0, planned);
+  }
+  return items;
+}
+
 /** Items of one user+month with per-item status, plus kalan (= sum of unpaid). */
 export async function monthView(db, userId, month) {
   const { rows } = await db.execute({
-    sql: `SELECT c.*, ${COVERED_SQL} AS covered, r.start_ms, r.end_ms, r.note AS r_note, r.people AS r_people, r.cancelled_at AS r_cancelled
-          FROM charges c LEFT JOIN reservations r ON r.id = c.reservation_id
-          WHERE c.user_id = ? AND c.month = ?
+    sql: `${ITEM_SQL} WHERE c.user_id = ? AND c.month = ?
           ORDER BY CASE c.kind WHEN 'subscription' THEN 0 WHEN 'booking' THEN 1 ELSE 2 END, COALESCE(r.start_ms, 0), c.id`,
     args: [userId, month],
   });
@@ -87,17 +150,11 @@ export async function monthView(db, userId, month) {
   // kalan = what is still owed: unpaid charges minus part-payments already applied to them (paid + kalan = total).
   let kalan = 0, total = 0, paid = 0;
   const items = rows.map((c) => {
-    const status = statusOf(c);
-    const covered = status === "unpaid" ? Math.min(Number(c.covered), c.amount_try) : 0;
-    if (status === "unpaid") { kalan += c.amount_try - covered; paid += covered; }
-    if (status === "paid") paid += c.amount_try;
-    if (status === "unpaid" || status === "paid") total += c.amount_try;
-    return {
-      id: c.id, kind: c.kind, amount_try: c.amount_try, status, paid_by: c.paid_by, note: c.note,
-      paid_try: status === "paid" ? c.amount_try : covered, remaining_try: status === "unpaid" ? c.amount_try - covered : 0,
-      flag: status === "unpaid" ? flags.get(c.id) ?? null : null,
-      reservation: c.reservation_id ? { id: c.reservation_id, start_ms: c.start_ms, end_ms: c.end_ms, note: c.r_note, people: c.r_people, cancelled: !!c.r_cancelled } : null,
-    };
+    const it = toItem(c, flags.get(c.id) ?? null);
+    if (it.status === "unpaid") { kalan += it.remaining_try; paid += it.paid_try; }
+    if (it.status === "paid") paid += c.amount_try;
+    if (it.status === "unpaid" || it.status === "paid") total += c.amount_try;
+    return it;
   });
   return { month, items, kalan, total, paid };
 }
@@ -118,15 +175,16 @@ export async function outstandingOverview(db, month) {
   const { rows } = await db.execute({
     sql: `SELECT u.id, u.name, u.active,
             COALESCE(SUM(CASE WHEN c.month = ?1 THEN ${owed} ELSE 0 END), 0) AS outstanding_try,
-            COALESCE(SUM(${owed}), 0) AS debt_try
+            COALESCE(SUM(CASE WHEN c.month <= ?3 THEN ${owed} ELSE 0 END), 0) AS debt_try
           FROM users u
           LEFT JOIN charges c ON c.user_id = u.id AND c.month <= ?2
             AND c.voided_at IS NULL AND c.waived_at IS NULL AND c.paid_receipt_id IS NULL
-          WHERE u.status <> 'pending' AND u.id <> (SELECT MIN(id) FROM users)
+          WHERE u.status <> 'pending' AND u.id <> ${BOOTSTRAP_ID_SQL}
           GROUP BY u.id, u.name, u.active
           HAVING u.active = 1 OR debt_try > 0
           ORDER BY debt_try DESC, u.id`,
-    args: [month, currentMonth() > month ? currentMonth() : month],
+    // ?2 = join bound (a FUTURE month's own charges must reach outstanding_try), ?3 = debt is never counted past today
+    args: [month, currentMonth() > month ? currentMonth() : month, currentMonth()],
   });
   const users = rows
     .map((r) => ({ id: r.id, name: r.name, active: !!r.active, outstanding_try: Number(r.outstanding_try), debt_try: Number(r.debt_try) }))
@@ -157,6 +215,7 @@ export const addAdjustment = (db, { userId, month, amountTry, note }) => serial(
   if (!label) throw fail(400, "Açıklama gerekli");
   const u = (await db.execute({ sql: "SELECT id FROM users WHERE id = ?", args: [userId] })).rows[0];
   if (!u) throw fail(404, "Üye bulunamadı");
+  if (await isBootstrap(db, u)) throw fail(409, "Gözlemci yönetici hesabına ücret eklenemez");
   const { lastInsertRowid } = await db.execute({
     sql: "INSERT INTO charges (user_id, month, kind, amount_try, note) VALUES (?,?, 'adjustment', ?, ?)",
     args: [userId, month, amountTry, label],

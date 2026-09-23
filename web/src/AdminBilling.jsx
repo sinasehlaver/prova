@@ -1,13 +1,13 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { api, apiUpload } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon } from "./icons.jsx";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
-import { CreditCard, ItemList, KalanCard, MonthNav, StatusPill, UploadG, fmtTRY, monthLabel } from "./Billing.jsx";
+import { CheckG, CreditCard, CreditCover, DashG, ItemList, KalanCard, MonthNav, StatusPill, UploadG, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
 
 const A = tr.admin;
 const fmtDateTimeShort = (ms) => new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Europe/Istanbul" }).format(ms);
-const nowMonth = () => new Date(Date.now() + 3 * 3600_000).toISOString().slice(0, 7);
+const keyOf = (it) => it.key ?? String(it.id); // charge id, or `sub:YYYY-MM` for a future month's planned rent (prepay)
 const nextOf = (m) => (m.slice(5) === "12" ? `${+m.slice(0, 4) + 1}-01` : `${m.slice(0, 5)}${String(+m.slice(5) + 1).padStart(2, "0")}`);
 
 export function useToast() {
@@ -17,85 +17,253 @@ export function useToast() {
   return [say, <div key="toast" className={"toast" + (msg ? " show" : "")} role="status">{msg}</div>];
 }
 
-/** A member's own upload, not yet reviewed: no charges/amount picked yet, so approve here means "record the payment
- *  now" (the admin types the amount; default = every unpaid item of the receipt's upload month) rather than just
- *  flipping a flag. Reject just closes it out (-> mismatch, no allocation), same as any other rejected receipt. */
-function PendingReceiptCard({ r, onReview, showUser = true }) {
+const P = A.pay;
+const chargeName = (c) => (c.kind === "subscription" ? tr.billing.subscription : c.kind === "adjustment" ? c.note || tr.billing.adjustment : tr.billing.booking);
+const DraftG = () => (
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeDasharray="3 3.2" aria-hidden="true"><circle cx="12" cy="12" r="8" /></svg>
+);
+
+/** Inline PDF toggle + "open in a new tab". Only ever rendered when there IS a PDF (a cash payment has none - no button). */
+function PdfToggle({ src, title }) {
   const [open, setOpen] = useState(false);
-  const [amount, setAmount] = useState("");
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const approve = async () => { setBusy(true); try { await onReview(r, "approve", note, { amount_try: Number(amount) }); setNote(""); } finally { setBusy(false); } };
-  const reject = async () => { setBusy(true); try { await onReview(r, "reject", note); setNote(""); } finally { setBusy(false); } };
   return (
-    <li className="card a-rcpt">
-      <div className="a-rcpt-top">
-        <span><b>{showUser ? r.user_name : monthLabel(r.month)}</b>{showUser && <span className="muted small"> · {monthLabel(r.month)}</span>}</span>
-        <StatusPill flag="pending" />
-      </div>
-      <p className="rcpt-msg">{A.pendingHint}</p>
-      <div className="muted small">{r.filename} · {fmtDateTimeShort(r.uploaded_at)}</div>
-      <div className="review">
-        <input type="number" min="1" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={A.pay.amount} aria-label={A.pay.amount} style={{ maxWidth: "8rem" }} />
-        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={A.notePh} aria-label={A.notePh} />
-        <button className="btn good" disabled={busy || !(Number(amount) > 0)} onClick={approve}>{A.approve}</button>
-        <button className="btn danger" disabled={busy} onClick={reject}>{A.reject}</button>
-      </div>
-      <p className="hint">{A.reviewHint}</p>
+    <>
       <div className="row wrap">
-        <button className="btn sm ghost" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "PDF'i gizle" : "PDF'i göster"}</button>
-        <a className="link" href={`/api/receipts/${r.id}/pdf`} target="_blank" rel="noreferrer">{A.openPdf}</a>
+        <button type="button" className="btn sm ghost" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? P.hidePdf : P.showPdf}</button>
+        <a className="link" href={src} target="_blank" rel="noreferrer">{A.openPdf}</a>
       </div>
-      {open && <embed className="embed" src={`/api/receipts/${r.id}/pdf`} type="application/pdf" title={r.filename || "Dekont"} />}
+      {open && <embed className="embed" src={src} type="application/pdf" title={title || "Dekont"} />}
+    </>
+  );
+}
+
+/**
+ * The money lines of a payment, the same shape before (draft: `children` = the amount input) and after saving:
+ * selected items' total, what was paid, then what that leaves - kalan borç, or where the surplus went (the month's
+ * other items, then credit the community owes). Saved cards feed the SERVER's numbers (expected/paid/spill/overpaid
+ * from listReceipts); the draft preview mirrors allocateRaw's order on the same monthView data - the server decides.
+ */
+function PaySummary({ count, sum, paid, spill, owed, saved, paidLabel = P.paid, children }) {
+  const left = Math.max(0, sum - paid);
+  return (
+    <dl className="pay-sum">
+      <div><dt>{P.selectedSum(count)}</dt><dd className="amount">{fmtTRY(sum)}</dd></div>
+      <div className="pay-paid"><dt>{children ? children[0] : paidLabel}</dt><dd className="amount">{children ? children[1] : fmtTRY(paid)}</dd></div>
+      {paid > 0 && left > 0 && <div className="pay-out warn"><dt>{P.left}</dt><dd className="amount">{fmtTRY(left)}</dd></div>}
+      {paid > 0 && left === 0 && spill === 0 && owed === 0 && <div className="pay-out good"><dt>{P.exact}</dt><dd><CheckG /></dd></div>}
+      {spill > 0 && <div className="pay-out"><dt>{saved ? P.spillSaved : P.spill}</dt><dd className="amount">{fmtTRY(spill)}</dd></div>}
+      {owed > 0 && <div className="pay-out good"><dt>{P.owed}</dt><dd className="amount">{fmtTRY(owed)}</dd></div>}
+    </dl>
+  );
+}
+
+/**
+ * DRAFT payment - nothing is saved until "Ödemeyi onayla". The admin multi-selects what the payment covers (the
+ * month's still-open items), types what was paid (prefilled with the selected total until typed) and sees the result
+ * live. Two modes: `receipt` = a member's pending upload (its PDF is already there, reject is offered), else a fresh
+ * admin record (optional dekont upload). `onSave({charges, amount, note, file})` returns false to keep the draft.
+ */
+//
+// Multi-month (2026-09-23): `elsewhere` = the member's open items in OTHER months (older debt, already-made future
+// bookings, next month's planned rent `sub:YYYY-MM`) - one payment can cover e.g. this month's extra + next month's
+// rent. A surplus still only spills onto THIS month's other items (server: pickRaw), mirrored below.
+// `credit` > 0 (admin record only) offers "Alacaktan öde": the member's existing credit pays the picked items, no new
+// money, no PDF, no spill (server: recordPayment fromCredit).
+function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onSave, onReject, say }) {
+  const isOpen = (i) => (i.status === "unpaid" || i.status === "upcoming") && i.remaining_try > 0;
+  const open = items.filter(isOpen);
+  const away = elsewhere.filter(isOpen);
+  const all = [...open, ...away];
+  const [sel, setSel] = useState(() => new Set());
+  const [amount, setAmount] = useState("");
+  const typed = useRef(false); // once the admin types an amount, the selection stops overwriting it
+  const [note, setNote] = useState("");
+  const [file, setFile] = useState(null);
+  const [blobUrl, setBlobUrl] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [useCredit, setUseCredit] = useState(false);
+  const fromCredit = useCredit && credit > 0 && !receipt;
+  const amountId = useId();
+  const openKey = all.map((i) => `${keyOf(i)}:${i.remaining_try}`).join(",");
+  useEffect(() => { setSel((s) => new Set([...s].filter((k) => all.some((i) => keyOf(i) === k)))); }, [openKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sum = all.filter((i) => sel.has(keyOf(i))).reduce((s, i) => s + i.remaining_try, 0);
+  const others = fromCredit ? 0 : open.filter((i) => !sel.has(keyOf(i))).reduce((s, i) => s + i.remaining_try, 0);
+  const suggest = fromCredit ? Math.min(sum, credit) : sum;
+  useEffect(() => { if (!typed.current) setAmount(suggest > 0 ? String(suggest) : ""); }, [suggest]);
+  useEffect(() => {
+    if (!file) { setBlobUrl(null); return undefined; }
+    const u = URL.createObjectURL(file);
+    setBlobUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [file]);
+
+  const n = Number(amount);
+  const paid = n > 0 ? n : 0;
+  const surplus = fromCredit ? 0 : Math.max(0, paid - sum); // from credit: an unspent rest simply stays credit
+  const spill = Math.min(surplus, others);
+  const overCredit = fromCredit && paid > credit;
+  const toggle = (id) => setSel((s) => { const x = new Set(s); x.has(id) ? x.delete(id) : x.add(id); return x; });
+  const pickRow = (it, showMonth) => (
+    <li key={keyOf(it)}>
+      <label className={"bill-item" + (it.status === "upcoming" ? " upcoming" : "")} data-kind={it.kind}>
+        <input type="checkbox" checked={sel.has(keyOf(it))} onChange={() => toggle(keyOf(it))} />
+        <div>
+          <div className="bill-title">{itemTitle(it)}</div>
+          {(showMonth || it.paid_try > 0) && (
+            <div className="bill-sub">
+              {showMonth && <span className="pick-month">{monthLabel(it.month)}</span>}
+              {it.paid_try > 0 && <span className="bill-left">{tr.billing.ofAmount(fmtTRY(it.paid_try))} · <b>{P.itemLeft(fmtTRY(it.remaining_try))}</b></span>}
+            </div>
+          )}
+        </div>
+        <span className="bill-amount amount">{fmtTRY(it.remaining_try)}</span>
+      </label>
+    </li>
+  );
+  const pick = (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    if (!/pdf$/i.test(f.name) && f.type !== "application/pdf") return say(tr.billing.onlyPdf);
+    setFile(f);
+  };
+  const run = async (fn) => {
+    setBusy(true);
+    try {
+      if ((await fn()) !== false) { setSel(new Set()); setNote(""); setFile(null); setUseCredit(false); typed.current = false; setAmount(""); }
+    } catch (err) { say(err.message || tr.err.generic); } finally { setBusy(false); }
+  };
+  const submit = (e) => { e.preventDefault(); run(() => onSave({ charges: [...sel], amount: n, note: note.trim(), file: fromCredit ? null : file, fromCredit })); };
+
+  if (!receipt && !all.length)
+    return <section className="card pay-card pay-form draft"><div className="pay-head">{head}</div><p className="hint">{P.none}</p></section>;
+  return (
+    <form className={"card pay-card pay-form draft" + (receipt ? " a-rcpt" : "")} onSubmit={submit}>
+      <div className="pay-head">
+        {head}
+        <span className="pill draft"><DraftG />{receipt ? tr.billing.status.pending : P.draft}</span>
+      </div>
+      <p className="hint">{receipt ? A.pendingHint : P.hint}</p>
+      {all.length > 0 ? (
+        <fieldset className="pay-items">
+          <legend>{P.covers}</legend>
+          {open.length > 0 ? <ul className="pay-pick">{open.map((it) => pickRow(it, false))}</ul> : <p className="hint">{P.none}</p>}
+          {away.length > 0 && (
+            <>
+              <div className="pay-legend pay-away">{P.otherMonths}</div>
+              <ul className="pay-pick">{away.map((it) => pickRow(it, true))}</ul>
+            </>
+          )}
+        </fieldset>
+      ) : <p className="hint">{P.none}</p>}
+      {credit > 0 && !receipt && (
+        <div className="pay-credit">
+          <label className="check"><input type="checkbox" checked={useCredit} onChange={(e) => { setUseCredit(e.target.checked); typed.current = false; }} /><span>{P.fromCredit(fmtTRY(credit))}</span></label>
+          {fromCredit && <p className="hint">{P.fromCreditHint}</p>}
+        </div>
+      )}
+      <PaySummary count={sel.size} sum={sum} paid={paid} spill={spill} owed={surplus - spill}>
+        {[
+          <label key="l" htmlFor={amountId}>{fromCredit ? P.creditUsed : P.amount}</label>,
+          <input key="i" id={amountId} className="pay-amount" type="number" min="1" max={fromCredit ? credit : undefined} step="1" required inputMode="numeric" value={amount}
+            onChange={(e) => { typed.current = true; setAmount(e.target.value); }} />,
+        ]}
+      </PaySummary>
+      {overCredit && <p className="hint warn-text" role="alert">{P.overCredit}</p>}
+      <label className="field"><span>{P.note}</span><input maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} /></label>
+      {receipt ? (receipt.has_pdf && <PdfToggle src={`/api/receipts/${receipt.id}/pdf`} title={receipt.filename} />) : fromCredit ? null : (
+        <div className="pay-pdf">
+          <div className="row wrap">
+            <label className="btn file" aria-disabled={busy}>
+              <input type="file" accept="application/pdf,.pdf" onChange={pick} disabled={busy} />
+              <UploadG width="16" height="16" />{file ? P.changePdf : P.pickPdf}
+            </label>
+            {file && (
+              <>
+                <span className="muted small pdf-name">{file.name}</span>
+                <button type="button" className="btn sm ghost" onClick={() => setFile(null)}>{P.clearPdf}</button>
+              </>
+            )}
+          </div>
+          {file && blobUrl && <PdfToggle key={blobUrl} src={blobUrl} title={file.name} />}
+        </div>
+      )}
+      {!sel.size && all.length > 0 && <p className="hint">{P.pickFirst}</p>}
+      <div className="row end wrap">
+        {onReject && <button type="button" className="btn danger" disabled={busy} onClick={() => run(() => onReject(note.trim()))}>{A.reject}</button>}
+        <button className="btn primary" disabled={busy || !sel.size || !(n > 0) || overCredit}>{P.submit}</button>
+      </div>
+    </form>
+  );
+}
+
+/** A member's own upload, not yet reviewed = a DRAFT payment with the PDF already attached. Items = the receipt's
+ *  month (from the caller when it has them, else fetched). Approve = recordPayment's allocation into this row. */
+function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, showUser, say }) {
+  const [fetched, setFetched] = useState(null);
+  const [err, setErr] = useState("");
+  const load = () => { setErr(""); api("GET", `/admin/users/${r.user_id}/billing?month=${r.month}`).then((d) => setFetched(d), (e) => setErr(e.message || tr.err.load)); };
+  useEffect(() => { if (!given) load(); }, [given, r.user_id, r.month]); // eslint-disable-line react-hooks/exhaustive-deps
+  const items = given ?? fetched?.items;
+  const elsewhere = given ? givenElse : fetched?.other_open;
+  const head = <span><b>{showUser ? r.user_name : monthLabel(r.month)}</b>{showUser && <span className="muted small"> · {monthLabel(r.month)}</span>}<span className="muted small"> · {fmtDateTimeShort(r.uploaded_at)}</span></span>;
+  if (!items) return <li>{err ? <ErrorState message={err} onRetry={load} /> : <Skeleton rows={2} />}</li>;
+  return (
+    <li>
+      <PaymentComposer items={items} elsewhere={elsewhere} receipt={r} head={head} say={say}
+        onSave={({ charges, amount, note }) => onReview(r, "approve", note, { amount_try: amount, charges, month: r.month })}
+        onReject={(note) => onReview(r, "reject", note)} />
     </li>
   );
 }
 
-/** Receipt card: extracted amount next to expected, inline PDF, approve / reject with an optional note. */
-function ReceiptCard({ r, onReview, showUser = true }) {
-  const [open, setOpen] = useState(false);
+/**
+ * A payment AFTER it was saved ("Ödemeyi onayla"): read-only. Only the items it was recorded for (not the whole
+ * list), their total, what was actually paid, and what that left - kalan / surplus on other items / credit.
+ * PDF only if there is one. The undo (reject) is tucked away in a disclosure. Rejected/undone ones render muted.
+ */
+function ReceiptCard({ r, onReview, showUser = true, items, elsewhere, say }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  const review = async (action) => { setBusy(true); try { await onReview(r, action, note); setNote(""); } finally { setBusy(false); } };
-  if (r.status === "pending") return <PendingReceiptCard r={r} onReview={onReview} showUser={showUser} />;
-  const found = r.found_try ?? r.amounts[0];
-  const off = found != null && Math.round(found * 100) !== Math.round(r.expected_try * 100); // no PDF (cash) is not "wrong"
+  if (r.status === "pending") return <PendingReceiptCard r={r} items={items} elsewhere={elsewhere} onReview={onReview} showUser={showUser} say={say} />;
+  const ok = r.status === "ok";
+  const review = async (action) => { setBusy(true); try { if ((await onReview(r, action, note)) !== false) setNote(""); } finally { setBusy(false); } };
+  const picked = r.charges.filter((c) => c.selected !== false);
+  const adminNote = ok ? (r.admin_note || "").replace(/^Yönetici (kaydetti|onayladı):?\s*/, "") : "";
   return (
-    <li className="card a-rcpt">
-      <div className="a-rcpt-top">
+    <li className={"card pay-card a-rcpt " + (ok ? "saved" : "void")}>
+      <div className="pay-head">
         <span><b>{showUser ? r.user_name : monthLabel(r.month)}</b>{showUser && <span className="muted small"> · {monthLabel(r.month)}</span>}</span>
-        <StatusPill status={r.status === "ok" ? "paid" : undefined} flag={r.status === "ok" ? undefined : r.status} partial={r.status === "ok" && r.remaining_try > 0} />
+        {ok ? <span className="pill ok"><CheckG />{P.savedPill}</span>
+          : r.admin_note != null ? <span className="pill"><DashG />{A.rejected}</span> : <StatusPill flag={r.status} />}
       </div>
-      <div className="cmp">
-        <div><small>{A.expected}</small><b className="amount">{fmtTRY(r.expected_try)}</b></div>
-        <div className={off ? "off" : ""}><small>{A.found}</small><b className="amount">{found == null ? "—" : fmtTRY(found)}</b></div>
-      </div>
-      {r.status === "ok" && (r.remaining_try > 0 || r.overpaid_try > 0) && (
-        <div className="cmp">
-          <div><small>{A.applied}</small><b className="amount">{fmtTRY(r.applied_try)}</b></div>
-          {r.remaining_try > 0 ? <div className="off"><small>{A.remainingLeft}</small><b className="amount">{fmtTRY(r.remaining_try)}</b></div>
-            : <div className="good"><small>{A.overpaid}</small><b className="amount">{fmtTRY(r.overpaid_try)}</b></div>}
+      <div className="muted small">{fmtDateTimeShort(r.uploaded_at)}{r.bank_ref ? ` · ${A.bankRef}: ${r.bank_ref}` : ""}</div>
+      {!ok && <p className="rcpt-msg">{r.message}</p>}
+      {picked.length > 0 && (
+        <div className="pay-items">
+          <div className="pay-legend">{P.coversSaved}</div>
+          <ul className="pay-covered">
+            {picked.map((c) => (
+              <li key={c.id}>
+                <span>{chargeName(c)}{c.month && c.month !== r.month && <span className="muted small"> · {monthLabel(c.month)}</span>}</span>
+                <span className="amount">{fmtTRY(c.amount_try)}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
-      <p className="rcpt-msg">{r.message}</p>
-      <div>
-        <div className="muted small">{A.covers}</div>
-        <ul className="covers">
-          {r.charges.map((c) => <li key={c.id}>{c.kind === "subscription" ? tr.billing.subscription : c.kind === "adjustment" ? c.note || tr.billing.adjustment : tr.billing.booking} · {fmtTRY(c.amount_try)}</li>)}
-        </ul>
-      </div>
-      <div className="muted small">{r.filename} · {fmtDateTimeShort(r.uploaded_at)}{r.bank_ref ? ` · ${A.bankRef}: ${r.bank_ref}` : ""}</div>
-      <div className="review">
-        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={A.notePh} aria-label={A.notePh} />
-        <button className="btn good" disabled={busy || (r.status === "ok" && r.admin_note != null)} onClick={() => review("approve")}>{A.approve}</button>
-        <button className="btn danger" disabled={busy || (r.status !== "ok" && r.admin_note != null)} onClick={() => review("reject")}>{A.reject}</button>
-      </div>
-      <p className="hint">{A.reviewHint}</p>
-      <div className="row wrap">
-        <button className="btn sm ghost" aria-expanded={open} onClick={() => setOpen(!open)}>{open ? "PDF'i gizle" : "PDF'i göster"}</button>
-        <a className="link" href={`/api/receipts/${r.id}/pdf`} target="_blank" rel="noreferrer">{A.openPdf}</a>
-      </div>
-      {open && <embed className="embed" src={`/api/receipts/${r.id}/pdf`} type="application/pdf" title={r.filename || "Dekont"} />}
+      {ok && <PaySummary saved count={picked.length} sum={r.expected_try} paid={r.paid_try} spill={r.spill_try} owed={r.overpaid_try} paidLabel={r.from_credit ? P.creditUsed : P.paid} />}
+      {adminNote && <p className="rcpt-msg">{adminNote}</p>}
+      {r.has_pdf && <PdfToggle src={`/api/receipts/${r.id}/pdf`} title={r.filename} />}
+      {(ok || r.charges.length > 0) && <details className="pay-undo">
+        <summary>{ok ? P.undo : P.redo}</summary>
+        {ok && <p className="hint">{P.undoHint}</p>}
+        <div className="review">
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={A.notePh} aria-label={A.notePh} />
+          {ok ? <button type="button" className="btn danger" disabled={busy} onClick={() => review("reject")}>{P.undoBtn}</button>
+            : <button type="button" className="btn good" disabled={busy} onClick={() => review("approve")}>{P.redo}</button>}
+        </div>
+      </details>}
     </li>
   );
 }
@@ -180,7 +348,7 @@ export function Payments({ onDetail }) {
       setList((l) => l.map((x) => (x.id === r.id ? upd : x)));
       loadOv();
       say(action === "approve" ? A.approved : A.rejected);
-    } catch (e) { say(e.message || tr.err.generic); }
+    } catch (e) { say(e.message || tr.err.generic); return false; }
   };
   return (
     <section>
@@ -207,90 +375,28 @@ export function Payments({ onDetail }) {
       <label className="check"><input type="checkbox" checked={allMonths} onChange={(e) => setAllMonths(e.target.checked)} /><span>{A.allMonths}</span></label>
       {!list && (loadErr ? <ErrorState message={loadErr} onRetry={load} /> : <Skeleton rows={3} />)}
       {list && !list.length && <EmptyState title={tr.empty.receipts[0]} body={tr.empty.receipts[1]} />}
-      <ul className="list">{(list || []).map((r) => <ReceiptCard key={r.id} r={r} onReview={review} />)}</ul>
+      <ul className="list">{(list || []).map((r) => <ReceiptCard key={r.id} r={r} onReview={review} say={say} />)}</ul>
       {toast}
     </section>
   );
 }
 
 /**
- * Manual payment recording - the member-facing self-serve upload is switched off, so this is how money gets booked.
- * The admin ticks the paid items, types the amount that was actually paid and may attach the dekont PDF. The PDF is
- * only parsed for a SUGGESTION (POST /admin/receipts/parse stores nothing); what counts is the typed amount, which
- * the server allocates oldest-item-first (under = kalan stays, over = spills onto the month, then becomes credit).
+ * Admin records a payment by hand: a DRAFT PaymentComposer over the month's open items. The dekont PDF is optional
+ * evidence only - it is no longer parsed for an amount in the UI (the admin types what was paid; the server still
+ * stores the parse metadata and flags a re-filed dekont with `duplicate`, shown as a toast after saving).
  */
-function RecordPayment({ userId, month, sel, outstanding, onSaved, say }) {
-  const [file, setFile] = useState(null);
-  const [parsed, setParsed] = useState(null);
-  const [amount, setAmount] = useState("");
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const typed = useRef(false); // once the admin types an amount, the selection/PDF stop overwriting it
-  useEffect(() => { if (!typed.current) setAmount(outstanding > 0 ? String(outstanding) : ""); }, [outstanding]);
-
-  const pick = async (e) => {
-    const f = e.target.files?.[0];
-    e.target.value = "";
-    if (!f) return;
-    if (!/pdf$/i.test(f.name) && f.type !== "application/pdf") return say(tr.billing.onlyPdf);
-    setFile(f); setParsed(null); setBusy(true);
-    try {
-      const p = await apiUpload(`/admin/receipts/parse?expected_try=${outstanding}`, f);
-      setParsed(p);
-      if (p.suggest_try != null && !typed.current) setAmount(String(p.suggest_try));
-    } catch (err) { say(err.message || tr.err.generic); } finally { setBusy(false); }
+function RecordPayment({ userId, month, items, elsewhere, credit, onSaved, say }) {
+  const save = async ({ charges, amount, note, file, fromCredit }) => {
+    const q = new URLSearchParams({ month, amount_try: String(amount), charges: charges.join(",") });
+    if (file) q.set("filename", file.name);
+    if (note) q.set("note", note);
+    if (fromCredit) q.set("from_credit", "1");
+    const out = await apiUpload(`/admin/users/${userId}/receipts?${q}`, file);
+    say(out.duplicate ? P.dupWarn : P.saved);
+    await onSaved();
   };
-
-  const save = async (e) => {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      const q = new URLSearchParams({ month, amount_try: String(amount), charges: [...sel].join(",") });
-      if (file) q.set("filename", file.name);
-      if (note.trim()) q.set("note", note.trim());
-      const out = await apiUpload(`/admin/users/${userId}/receipts?${q}`, file);
-      say(out.duplicate ? A.pay.dupWarn : A.pay.saved);
-      setFile(null); setParsed(null); setNote(""); typed.current = false;
-      await onSaved();
-    } catch (err) { say(err.message || tr.err.generic); } finally { setBusy(false); }
-  };
-
-  if (!sel.size && outstanding <= 0)
-    return <section className="card form pay-form"><h3>{A.pay.title}</h3><p className="hint">{A.pay.none}</p></section>;
-  const n = Number(amount);
-  const delta = n > 0 ? n - outstanding : 0;
-  return (
-    <form className="card form pay-form" onSubmit={save}>
-      <h3>{A.pay.title}</h3>
-      <p className="hint">{A.pay.hint}</p>
-      <div className="upload-sum"><span>{A.pay.selected(sel.size)}</span><b className="amount">{A.pay.outstanding(fmtTRY(outstanding))}</b></div>
-      <div className="row wrap">
-        <label className="btn file" aria-disabled={busy}>
-          <input type="file" accept="application/pdf,.pdf" onChange={pick} disabled={busy} />
-          <UploadG width="16" height="16" />{file ? A.pay.changePdf : A.pay.pickPdf}
-        </label>
-        {file && (
-          <>
-            <span className="muted small">{file.name}</span>
-            <button type="button" className="btn sm ghost" onClick={() => { setFile(null); setParsed(null); }}>{A.pay.clearPdf}</button>
-          </>
-        )}
-      </div>
-      {busy && file && !parsed && <p className="pay-parsed"><span className="spin" /> {A.pay.reading}</p>}
-      {/* the parsed amount silently prefills the input above (see the useEffect on `outstanding` / pick()) - no raw
-          "found in the dekont" label is shown; only a duplicate warning, which the admin needs to act on */}
-      {parsed?.duplicate && <p className="pay-parsed warn">{A.pay.dupWarn}</p>}
-      <div className="filters" style={{ marginBottom: 0 }}>
-        <label className="field"><span>{A.pay.amount}</span>
-          <input type="number" min="1" step="1" required value={amount} onChange={(e) => { typed.current = true; setAmount(e.target.value); }} />
-        </label>
-        <label className="field"><span>{A.pay.note}</span><input maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} /></label>
-      </div>
-      {delta < 0 && <p className="hint warn">{A.pay.under}</p>}
-      {delta > 0 && <p className="hint warn">{A.pay.over}</p>}
-      <div className="row end"><button className="btn primary" disabled={busy || !sel.size || !(n > 0)}>{A.pay.submit}</button></div>
-    </form>
-  );
+  return <PaymentComposer items={items} elsewhere={elsewhere} credit={credit} head={<h3>{P.title}</h3>} onSave={save} say={say} />;
 }
 
 /** Per-user payments + reservations (admin). */
@@ -298,21 +404,22 @@ export function UserDetail({ user, onBack }) {
   const [data, setData] = useState(null);
   const [res, setRes] = useState(null);
   const [adj, setAdj] = useState({ amount: "", label: "" });
-  const [sel, setSel] = useState(new Set());
   const [say, toast] = useToast();
   const [loadErr, setLoadErr] = useState("");
   const load = (month) => {
     setLoadErr("");
     return api("GET", `/admin/users/${user.id}/billing${month ? `?month=${month}` : ""}`).then(
-      (d) => { setData(d); setSel(new Set(d.items.filter((i) => i.status === "unpaid").map((i) => i.id))); },
+      (d) => setData(d),
       (e) => { setLoadErr(e.message || tr.err.load); say(e.message); },
     );
   };
-  const toggleSel = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   useEffect(() => { load(); api("GET", `/admin/users/${user.id}/reservations`).then(setRes, () => {}); }, [user.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const waive = async (it, waived) => { try { await api("POST", `/admin/charges/${it.id}/waive`, { waived }); say(waived ? A.waived : A.unwaive); load(data.month); } catch (e) { say(e.message); } };
-  const review = async (r, action, note, extra) => { try { await api("POST", `/admin/receipts/${r.id}/${action}`, { note, ...extra }); say(action === "approve" ? A.approved : A.rejected); load(data.month); } catch (e) { say(e.message); } };
+  const review = async (r, action, note, extra) => {
+    try { await api("POST", `/admin/receipts/${r.id}/${action}`, { note, ...extra }); say(action === "approve" ? A.approved : A.rejected); await load(data.month); }
+    catch (e) { say(e.message); return false; }
+  };
   const [settle, setSettle] = useState({ amount: "", note: "" });
   const settleCredit = async (e) => {
     e.preventDefault();
@@ -340,6 +447,7 @@ export function UserDetail({ user, onBack }) {
         <>
           <MonthNav month={data.month} months={data.months} onChange={load} />
           <KalanCard data={data} />
+          <CreditCover cover={data.credit_cover} />
           {data.credit.balance_try > 0 && (
             <CreditCard credit={data.credit}>
               <form className="form-row" onSubmit={settleCredit}>
@@ -354,14 +462,12 @@ export function UserDetail({ user, onBack }) {
               {data.credit.settlements.map((x) => <li key={x.id}><span>{fmtDateTimeShort(x.created_at)}{x.note ? ` · ${x.note}` : ""}</span><span className="num">{fmtTRY(x.amount_try)}</span></li>)}
             </ul>
           )}
-          <ItemList items={data.items} selectable selected={sel} onToggle={toggleSel} extra={(it) =>
+          {/* read-only item list (waive/unwaive only) - WHAT a payment covers is picked inside the payment form below */}
+          <ItemList items={data.items} empty={data.future ? tr.billing.future.empty : undefined} extra={(it) =>
             it.status === "unpaid" ? <button className="btn sm ghost" onClick={() => waive(it, true)}>{A.waive}</button>
               : it.status === "waived" ? <button className="btn sm ghost" onClick={() => waive(it, false)}>{A.unwaive}</button> : null} />
-          <RecordPayment
-            userId={user.id} month={data.month} sel={sel} say={say} onSaved={() => load(data.month)}
-            outstanding={data.items.filter((i) => sel.has(i.id) && i.status === "unpaid").reduce((s, i) => s + (i.remaining_try ?? i.amount_try), 0)}
-          />
-          <form className="card form" style={{ marginTop: "var(--s-4)" }} onSubmit={addAdj}>
+          {/* order matters (user request 2026-09-23): add an extra charge first, then record the payment that covers it */}
+          <form className="card form adj-form" onSubmit={addAdj}>
             <h3>{A.adjust}</h3>
             <div className="filters" style={{ marginBottom: 0 }}>
               <label className="field"><span>{A.adjustAmount}</span><input type="number" min="1" step="1" required value={adj.amount} onChange={(e) => setAdj({ ...adj, amount: e.target.value })} /></label>
@@ -369,9 +475,13 @@ export function UserDetail({ user, onBack }) {
             </div>
             <div className="row end"><button className="btn primary" disabled={!adj.amount || !adj.label.trim()}>{A.adjustAdd}</button></div>
           </form>
+          <RecordPayment userId={user.id} month={data.month} items={data.items} elsewhere={data.other_open} credit={data.credit.balance_try} say={say} onSaved={() => load(data.month)} />
           <h3 className="sec-title">{A.payments}</h3>
           {!data.receipts.length && <EmptyState title={tr.empty.receipts[0]} body={tr.empty.receipts[1]} />}
-          <ul className="list">{data.receipts.map((r) => <ReceiptCard key={r.id} r={r} onReview={review} showUser={false} />)}</ul>
+          <ul className="list">{data.receipts.map((r) => (
+            <ReceiptCard key={r.id} r={r} onReview={review} showUser={false} say={say}
+              items={r.month === data.month ? data.items : undefined} elsewhere={r.month === data.month ? data.other_open : undefined} />
+          ))}</ul>
         </>
       )}
       <h3 className="sec-title">{A.reservations}</h3>

@@ -28,6 +28,19 @@ n=$(curl -sf -b "$jar" "$B/api/users" | node -e 'console.log(JSON.parse(require(
 [ "$n" = 4 ] || { echo "expected 4 seeded users, got $n"; exit 1; }
 echo "login ok, $n users"
 
+# The seeded (bootstrap) admin is an OBSERVER: /me says so, it can't book. It creates a REAL admin (billable, can book)
+# that drives the rest of the smoke + the browser check - like a later-promoted admin in production.
+curl -sf -b "$jar" "$B/api/me" | grep -q '"observer":true' || { echo "bootstrap admin /me should say observer"; exit 1; }
+bstart=$(node -e 'console.log(Math.ceil(Date.now()/36e5)*36e5 + 40*864e5)')
+bcode=$(curl -s -b "$jar" -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d "{\"start_ms\":$bstart,\"hours\":1}" "$B/api/reservations")
+[ "$bcode" = 403 ] || { echo "bootstrap admin must not be able to reserve (got $bcode)"; exit 1; }
+atok=$(curl -sf -b "$jar" -H 'content-type: application/json' -d '{"name":"Yönetici Deneme","role":"admin"}' "$B/api/users" | node -e 'console.log(JSON.parse(require("fs").readFileSync(0)).invite_token)')
+boot_tok="$tok"
+curl -s -c "$jar" -o /dev/null "$B/i/$atok" # the jar now holds the real admin's session
+curl -sf -b "$jar" "$B/api/me" | grep -q '"observer":false' || { echo "real admin login failed"; exit 1; }
+curl -sf -b "$jar" "$B/api/users" | grep -q "\"id\":1," && { echo "bootstrap admin leaked into another admin's user list"; exit 1; }
+echo "bootstrap observer ok (no booking, hidden), real admin created"
+
 # reservations: create ok, overlapping rejected 409, back-to-back (end == start) ok. Day +30 keeps the browser check's slots free.
 start=$(node -e 'console.log(Math.ceil(Date.now()/36e5)*36e5 + 30*864e5)')
 post() { curl -s -b "$jar" -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -d "{\"start_ms\":$1,\"hours\":$2}" "$B/api/reservations"; }
@@ -91,6 +104,6 @@ echo "export + pwa ok (member 403, json/csv, manifest, icons)"
 echo "--- browser check"
 shots="${PROVA_SHOTS:-$tmp}"
 mkdir -p "$shots"
-PROVA_URL="$B" PROVA_TOKEN="$tok" PROVA_SHOTS="$shots" node web/verify.mjs
+PROVA_URL="$B" PROVA_TOKEN="$atok" PROVA_BOOT_TOKEN="$boot_tok" PROVA_SHOTS="$shots" node web/verify.mjs
 echo "app URL while running: $B/i/$tok  (server stops when verify ends; use npm run dev / start for a long-lived one)"
 echo "verify OK"

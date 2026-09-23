@@ -125,7 +125,8 @@ button.link:active { transform: scale(0.98); }
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   backdrop-filter: blur(14px); border-bottom: 1px solid var(--line);
 }
-.brand { font-size: var(--fs-4); flex: 1; }
+.brand-row { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--s-2); }
+.brand { font-size: var(--fs-4); flex: none; }
 .who { font-size: var(--fs-2); }
 .page { width: 100%; max-width: 44rem; margin: 0 auto; padding: var(--s-5) var(--s-4) calc(var(--tabbar-h) + var(--s-8)); flex: 1; }
 .page-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); margin-bottom: var(--s-4); }
@@ -269,6 +270,14 @@ button.link:active { transform: scale(0.98); }
 .week-nav strong { flex: 1 1 auto; min-width: 0; max-width: 16rem; text-align: center; font-family: var(--font-display); text-transform: capitalize; }
 .view-toggle { margin-bottom: var(--s-3); }
 @media (min-width: 900px) { .view-toggle { max-width: 16rem; } }
+/* Pin the Gün/Hafta toggle + date-range nav so they stay put while the day strip and hour grid scroll underneath
+   (whole-page scroll, no separate scroll container — same sticky-under-topbar pattern as .alert-banner). */
+.cal-sticky {
+  position: sticky; top: calc(var(--topbar-h) + env(safe-area-inset-top)); z-index: 3;
+  margin: 0 calc(var(--s-4) * -1); padding: var(--s-2) var(--s-4) 0;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+}
 .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .icon-btn:disabled:hover { background: transparent; color: var(--muted); }
 .cal-card { padding: var(--s-2); overflow: hidden; }
@@ -293,6 +302,10 @@ button.link:active { transform: scale(0.98); }
 .slot:active:not(:disabled) { transform: scale(0.98); }
 .slot.dragging { background: var(--accent-tint); border: 1px solid var(--accent); color: var(--accent); }
 .slot.dragging .slot-label { opacity: 1; }
+/* observer (bootstrap admin) calendar: free cells are plain divs - no hover/press affordance */
+.slot.ro, .slot.ro:hover { background: transparent; border: 1px dashed var(--line); color: var(--muted); transform: none; cursor: default; }
+.slot.ro:hover .slot-label { opacity: 0.75; }
+.observer-note { margin: 0 0 var(--s-3); background: var(--surface2); color: var(--muted); border: 1px solid var(--line); }
 .slot:disabled { border-style: solid; border-color: transparent; background: color-mix(in srgb, var(--surface2) 55%, transparent); cursor: default; opacity: 0.6; }
 .res {
   position: relative; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0;
@@ -387,28 +400,39 @@ button.link:active { transform: scale(0.98); }
 .btn.good { background: var(--good); border-color: transparent; color: var(--good-ink); }
 .btn.good:hover:not(:disabled) { filter: brightness(1.08); box-shadow: var(--shadow-md); border-color: transparent; }
 .sect { margin: var(--s-6) 0 var(--s-3); font-size: var(--fs-3); }
-.alert-banner {
-  position: sticky; top: calc(var(--topbar-h) + env(safe-area-inset-top)); z-index: 4;
-  width: 100%; max-width: 44rem; margin: var(--s-3) auto 0; padding: 0 var(--s-4);
-  max-height: 45vh; overflow-y: auto; animation: rise 220ms var(--ease);
+/* Compact top-bar alert badges (replaces the old sticky full-width banner): icon-only, next to the brand
+   heading, no visible text until tapped. Scrolls horizontally instead of wrapping so a burst of open
+   alerts never pushes the who-btn/theme toggle off-screen or causes page overflow at 390px. */
+.alert-badges {
+  display: flex; align-items: center; gap: var(--s-1); min-width: 0;
+  overflow-x: auto; scrollbar-width: none; -ms-overflow-style: none;
 }
-.alert-banner ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-2); }
-.alert-row {
+.alert-badges::-webkit-scrollbar { display: none; }
+.alert-badge {
+  --tone: var(--warn);
+  position: relative; flex: none;
+  display: grid; place-items: center; width: 2.25rem; height: 2.25rem;
+  border-radius: 50%; border: 1.5px solid var(--tone); background: color-mix(in srgb, var(--tone) 16%, var(--surface));
+  font-size: 1.05rem; line-height: 1;
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), transform 120ms var(--ease);
+}
+.alert-badge.urgent { --tone: var(--bad); border-width: 2.5px; }
+.alert-badge:hover { box-shadow: var(--shadow-sm); background: color-mix(in srgb, var(--tone) 26%, var(--surface)); }
+.alert-badge:active { transform: scale(0.92); }
+.alert-badge:focus-visible { outline: 2px solid var(--tone); outline-offset: 2px; }
+/* Detail sheet content (opened by tapping a badge): same icon+text layout the old banner row used. */
+.alert-detail {
   --tone: var(--warn);
   display: flex; align-items: center; gap: var(--s-3); padding: var(--s-3);
   border-radius: var(--r-lg); border: 1px solid color-mix(in srgb, var(--tone) 55%, var(--line));
   border-left: 5px solid var(--tone);
-  background: color-mix(in srgb, var(--tone) 14%, var(--surface)); box-shadow: var(--shadow-md);
-  transition: box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  background: color-mix(in srgb, var(--tone) 14%, var(--surface));
 }
-.alert-row.urgent { --tone: var(--bad); }
-.alert-row:hover { box-shadow: var(--shadow-lg); }
+.alert-detail.urgent { --tone: var(--bad); }
 .alert-emoji { flex: none; font-size: 1.5rem; line-height: 1; width: 2.25rem; text-align: center; }
 .alert-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .alert-meta { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-1); font-size: var(--fs-1); color: var(--text); font-weight: 600; }
 .alert-meta svg { color: var(--tone); flex: none; }
-.alert-row .btn { flex: none; min-height: 2.75rem; }
-@media (max-width: 420px) { .alert-row { flex-wrap: wrap; } .alert-row .btn { width: 100%; } }
 .kind-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr)); gap: var(--s-3); }
 .kind-btn {
   display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: var(--s-1);

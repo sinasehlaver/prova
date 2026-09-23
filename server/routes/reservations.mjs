@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { requireAdmin, requireAuth } from "../lib/auth.mjs";
+import { BOOTSTRAP_ID_SQL, OBSERVER_NAME, isBootstrap, requireAdmin, requireAuth } from "../lib/auth.mjs";
 import { listHolds, releaseHold, setHold } from "../lib/holds.mjs";
-import { MAX_PEOPLE, cancelReservation, createReservation, listReservations, maxHours } from "../lib/reservations.mjs";
+import { MAX_PEOPLE, OBSERVER_NO_BOOKING, cancelReservation, createReservation, listReservations, maxHours } from "../lib/reservations.mjs";
 
 const DAY = 86_400_000;
 
@@ -13,9 +13,12 @@ export default ({ db }) => {
     try { await fn(req, res); } catch (e) { e.status ? res.status(e.status).json({ error: e.message }) : next(e); }
   };
 
-  // Non-admin member picker: id + name only.
-  r.get("/members", guard(async (_req, res) => {
-    const { rows } = await db.execute("SELECT id, name FROM users WHERE active = 1 ORDER BY name COLLATE NOCASE");
+  // Non-admin member picker: id + name only. The bootstrap admin is hidden from everyone but themselves (like GET /users).
+  r.get("/members", guard(async (req, res) => {
+    const { rows } = await db.execute({
+      sql: `SELECT id, name FROM users WHERE active = 1 AND (id <> ${BOOTSTRAP_ID_SQL} OR id = ?) ORDER BY name COLLATE NOCASE`,
+      args: [req.user.id],
+    });
     res.json(rows.map(({ id, name }) => ({ id, name })));
   }));
 
@@ -47,6 +50,7 @@ export default ({ db }) => {
   // Soft holds ("X is choosing these hours"): UX layer above the DB overlap check. One live hold per user, ~2 min TTL.
   r.get("/holds", guard(async (req, res) => res.json(await listHolds(db, req.user.id))));
   r.post("/holds", guard(async (req, res) => {
+    if (await isBootstrap(db, req.user)) return res.status(403).json({ error: OBSERVER_NO_BOOKING });
     const b = req.body ?? {};
     res.json(await setHold(db, { userId: req.user.id, startMs: b.start_ms, hours: b.hours, maxHours: await maxHours(db) }));
   }));
@@ -54,7 +58,7 @@ export default ({ db }) => {
 
   // Admin-only audit trail of cancellations (who, whose booking, why). Members see nothing here.
   r.get("/reservations/audit", requireAdmin, guard(async (_req, res) => {
-    const { rows } = await db.execute(`SELECT a.*, actor.name AS actor_name, booker.name AS booker_name
+    const { rows } = await db.execute(`SELECT a.*, CASE WHEN a.actor_id = ${BOOTSTRAP_ID_SQL} THEN '${OBSERVER_NAME}' ELSE actor.name END AS actor_name, booker.name AS booker_name
       FROM reservation_audit a JOIN users actor ON actor.id = a.actor_id JOIN users booker ON booker.id = a.booker_id
       ORDER BY a.id DESC LIMIT 200`);
     res.json(rows);

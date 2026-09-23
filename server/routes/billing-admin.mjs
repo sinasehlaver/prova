@@ -1,9 +1,9 @@
 // Admin billing: receipts review, per-user views, waive/adjust, fee editor, payment settings. All under /api/admin.
 import { Router } from "express";
-import { requireAdmin } from "../lib/auth.mjs";
-import { addAdjustment, ensureMonth, fail, isMonth, listFees, monthRange, outstandingOverview, setFee, waiveCharge } from "../lib/billing.mjs";
+import { BOOTSTRAP_ID_SQL, bootstrapId, requireAdmin } from "../lib/auth.mjs";
+import { addAdjustment, canBrowse, ensureMonth, fail, isMonth, listFees, maxMonth, monthRange, outstandingOverview, setFee, waiveCharge } from "../lib/billing.mjs";
 import { creditPayload, settleCredit } from "../lib/credits.mjs";
-import { getSettings, listReceipts, parseReceipt, recordPayment, reviewReceipt } from "../lib/payments.mjs";
+import { getSettings, listReceipts, parseReceipt, parseTokens, recordPayment, reviewReceipt } from "../lib/payments.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 import { billingPayload, bodyBuf, guard, rawPdf } from "./billing.mjs";
 
@@ -13,23 +13,24 @@ export default ({ db }) => {
   const r = Router();
   r.use("/admin", requireAdmin);
 
-  const userOf = async (id) => {
+  // The bootstrap admin's own per-user pages are theirs only: to any other admin that id doesn't exist (404).
+  const userOf = async (id, req) => {
     const u = (await db.execute({ sql: "SELECT * FROM users WHERE id = ?", args: [Number(id)] })).rows[0];
-    if (!u) throw fail(404, "Üye bulunamadı");
+    if (!u || (u.id !== req.user.id && u.id === (await bootstrapId(db)))) throw fail(404, "Üye bulunamadı");
     return u;
   };
 
   // ---- overview: everyone at a glance (default view of the Ödemeler screen = current month, all members)
   r.get("/admin/billing/overview", guard(async (req, res) => {
     const month = req.query.month ?? currentMonth();
-    if (!isMonth(month) || month > currentMonth()) throw fail(400, "Geçersiz ay");
+    if (!isMonth(month) || month > maxMonth()) throw fail(400, "Geçersiz ay");
     // materialise the current month's subscription charges first, like economicsSummary does - otherwise a member who
     // never opened their own page would show 0 owed. (ensureMonth serialises per user; past months are left as they are.)
     // Bootstrap admin excluded here too - outstandingOverview hides it, so there's no point ensuring its charge.
-    const users = (await db.execute("SELECT * FROM users WHERE active = 1 AND id <> (SELECT MIN(id) FROM users)")).rows;
+    const users = (await db.execute(`SELECT * FROM users WHERE active = 1 AND id <> ${BOOTSTRAP_ID_SQL}`)).rows;
     if (month === currentMonth()) for (const u of users) await ensureMonth(db, u, month);
     const joined = users.reduce((a, u) => (a && a < u.joined_month ? a : u.joined_month), null) ?? currentMonth();
-    res.json({ ...(await outstandingOverview(db, month)), months: monthRange(joined < month ? joined : month, currentMonth()) });
+    res.json({ ...(await outstandingOverview(db, month)), months: monthRange(joined < month ? joined : month, maxMonth()) });
   }));
 
   // ---- receipts
@@ -48,26 +49,26 @@ export default ({ db }) => {
   for (const action of ["approve", "reject"])
     r.post(`/admin/receipts/:id/${action}`, guard(async (req, res) => {
       const b = req.body ?? {};
-      const chargeIds = b.charges == null ? null : (Array.isArray(b.charges) ? b.charges.map(Number) : String(b.charges).split(",").map(Number));
+      const chargeIds = b.charges == null ? null : parseTokens(b.charges);
       await reviewReceipt(db, Number(req.params.id), action, b.note, { month: b.month, chargeIds, paidTry: b.amount_try != null ? Number(b.amount_try) : undefined });
       res.json((await listReceipts(db, { id: Number(req.params.id) }))[0]);
     }));
 
   // ---- per-user views
   r.get("/admin/users/:id/billing", guard(async (req, res) => {
-    const u = await userOf(req.params.id);
+    const u = await userOf(req.params.id, req);
     const month = req.query.month ?? currentMonth();
-    if (!isMonth(month) || month < u.joined_month || month > currentMonth()) throw fail(400, "Geçersiz ay");
+    if (!canBrowse(u, month)) throw fail(400, "Geçersiz ay");
     res.json(await billingPayload(db, u, month));
   }));
   r.get("/admin/users/:id/receipts", guard(async (req, res) => {
-    res.json(await listReceipts(db, { userId: (await userOf(req.params.id)).id }));
+    res.json(await listReceipts(db, { userId: (await userOf(req.params.id, req)).id }));
   }));
   // people + the booking charge's own SNAPSHOT amount (not a recomputed current fee - see lib/billing.mjs on charge
   // snapshots). At most one 'booking' charge per reservation (addBookingCharges inserts exactly one); charge_try is
   // null when the fee was 0 at booking time (no charge was ever inserted).
   r.get("/admin/users/:id/reservations", guard(async (req, res) => {
-    const u = await userOf(req.params.id);
+    const u = await userOf(req.params.id, req);
     const { rows } = await db.execute({
       sql: `SELECT r.id, r.start_ms, r.end_ms, r.note, r.people, r.cancelled_at, b.name AS booker_name, c.amount_try AS charge_try
             FROM reservations r JOIN users b ON b.id = r.booker_id
@@ -78,28 +79,29 @@ export default ({ db }) => {
     res.json(rows);
   }));
   // Manual payment recording (replaces the member's self-serve upload). Raw PDF body (optional - a payment with no
-  // dekont is still recordable); ?month=&charges=1,2 (omit = all unpaid of the month)&amount_try=&filename=&note=
+  // dekont is still recordable); ?month=&charges=1,2,sub:YYYY-MM (omit = all unpaid of the month; ids may be from ANY
+  // month of the user, sub:YYYY-MM = prepay a future month's planned rent)&amount_try=&filename=&note=
+  // &from_credit=1 = no new money: spend the member's existing credit on the picked items (no PDF allowed).
   r.post("/admin/users/:id/receipts", rawPdf, guard(async (req, res) => {
-    const u = await userOf(req.params.id);
+    const u = await userOf(req.params.id, req);
     const month = req.query.month ?? currentMonth();
-    if (!isMonth(month) || month < u.joined_month || month > currentMonth()) throw fail(400, "Geçersiz ay");
-    const chargeIds = req.query.charges === undefined ? null : String(req.query.charges).split(",").map(Number);
-    if (chargeIds && (!chargeIds.length || chargeIds.some((n) => !Number.isInteger(n)))) throw fail(400, "Geçersiz kalem seçimi");
+    if (!canBrowse(u, month)) throw fail(400, "Geçersiz ay");
+    const chargeIds = req.query.charges === undefined ? null : parseTokens(req.query.charges);
     const { id, duplicate } = await recordPayment(db, u, {
       month, chargeIds, paidTry: Number(req.query.amount_try), buffer: bodyBuf(req),
-      filename: req.query.filename, note: req.query.note,
+      filename: req.query.filename, note: req.query.note, fromCredit: req.query.from_credit === "1",
     });
     res.status(201).json({ ...(await listReceipts(db, { id }))[0], duplicate });
   }));
   r.post("/admin/users/:id/charges", guard(async (req, res) => {
-    const u = await userOf(req.params.id);
+    const u = await userOf(req.params.id, req);
     const b = req.body ?? {};
     const id = await addAdjustment(db, { userId: u.id, month: b.month, amountTry: b.amount_try, note: b.note });
     res.status(201).json({ id });
   }));
   // "Alacağı kapat": the community paid the member's overpayment back (or settled it by hand). amount_try omitted = all of it.
   r.post("/admin/users/:id/credit/settle", guard(async (req, res) => {
-    const u = await userOf(req.params.id);
+    const u = await userOf(req.params.id, req);
     const b = req.body ?? {};
     const amount = await settleCredit(db, u.id, { amountTry: b.amount_try, note: b.note });
     res.json({ settled_try: amount, credit: await creditPayload(db, u.id) });

@@ -2,8 +2,8 @@
 // Admin billing endpoints live in billing-admin.mjs and are mounted from here (keeps ROUTES to one line).
 import express, { Router } from "express";
 import { requireAuth } from "../lib/auth.mjs";
-import { browsableMonths, ensureMonth, fail, isMonth, monthView } from "../lib/billing.mjs";
-import { creditPayload } from "../lib/credits.mjs";
+import { browsableMonths, canBrowse, ensureMonth, fail, isMonth, monthView, openElsewhere, projectedSub } from "../lib/billing.mjs";
+import { creditOutlook, creditPayload } from "../lib/credits.mjs";
 import { getSettings, listReceipts, MAX_PDF, submitReceipt } from "../lib/payments.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 import billingAdmin from "./billing-admin.mjs";
@@ -14,16 +14,29 @@ export const guard = (fn) => async (req, res, next) => {
 };
 
 /** Month view + where to pay + this month's receipts for one user. Shared with the admin per-user view. */
+// A FUTURE month is never materialised by a read (its rent would snapshot today's fee and a later setFee for that month
+// would miss it) - it shows its real charges (bookings already made) plus a display-only `upcoming` planned rent.
+// credit_cover = creditOutlook (display-only: how much of this month the existing credit would cover; nothing applied).
 export async function billingPayload(db, user, month) {
-  await ensureMonth(db, user, month);
-  const [view, receipts, cfg, credit] = await Promise.all([monthView(db, user.id, month), listReceipts(db, { userId: user.id, month }), getSettings(db), creditPayload(db, user.id)]);
-  return { ...view, months: browsableMonths(user), receipts, pay_to: { iban: cfg.iban, holder: cfg.holder }, credit }; // credit = what the community owes the member (all months)
+  const future = month > currentMonth();
+  if (!future) await ensureMonth(db, user, month);
+  const [view, receipts, cfg, credit, planned, other_open] = await Promise.all([
+    monthView(db, user.id, month), listReceipts(db, { userId: user.id, month }), getSettings(db), creditPayload(db, user.id),
+    projectedSub(db, user, month), openElsewhere(db, user, month),
+  ]);
+  const projected_try = planned?.amount_try ?? 0;
+  const credit_cover = await creditOutlook(db, user, month, view.kalan + projected_try, credit.balance_try);
+  return {
+    ...view, items: planned ? [planned, ...view.items] : view.items, projected_try, future, other_open,
+    months: browsableMonths(user), receipts, pay_to: { iban: cfg.iban, holder: cfg.holder },
+    credit, credit_cover, // credit = what the community owes the member (all months)
+  };
 }
 
 export const pickMonth = (q, user) => {
   const month = q ?? currentMonth();
   if (!isMonth(month)) throw fail(400, "Geçersiz ay");
-  if (month > currentMonth() || month < user.joined_month) throw fail(400, "Bu ay için ödeme kalemi yok");
+  if (!canBrowse(user, month)) throw fail(400, "Bu ay görüntülenemez");
   return month;
 };
 

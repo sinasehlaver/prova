@@ -3,6 +3,7 @@
 import { serial } from "./serial.mjs";
 import { ensureMonth, fail, feeFor, isMonth, nextMonth, setFee } from "./billing.mjs";
 import { monthOf } from "./tz.mjs";
+import { BOOTSTRAP_ID_SQL } from "./auth.mjs";
 
 export const BUFFER_PCT = 10;
 export const DEFAULT_CATEGORIES = ["kira", "su", "elektrik", "internet", "aidat", "diğer"];
@@ -105,7 +106,9 @@ export async function economicsSummary(db, { now = Date.now(), bufferPct = BUFFE
   const cur = monthOf(now), next = nextMonth(cur), first = addMonths(cur, -5);
   // ponytail: only the current month's subscription charges are materialised (as if every member opened the app);
   // past months use what exists. Add a cron/backfill if lazy materialisation leaves holes in history.
-  for (const u of (await db.execute("SELECT * FROM users WHERE active = 1")).rows) await ensureMonth(db, u, cur);
+  // the bootstrap admin (observer, never billed) is left out here AND in the charge aggregate below - the latter also
+  // hides any charge it got before this rule existed (a live DB may have one), so member counts / income stay honest.
+  for (const u of (await db.execute(`SELECT * FROM users WHERE active = 1 AND id <> ${BOOTSTRAP_ID_SQL}`)).rows) await ensureMonth(db, u, cur);
   await ensureCostMonth(db, cur);
   const ch = (await db.execute({
     sql: `SELECT month,
@@ -114,7 +117,7 @@ export async function economicsSummary(db, { now = Date.now(), bufferPct = BUFFE
             COALESCE(SUM(kind = 'subscription' AND voided_at IS NULL AND waived_at IS NULL), 0) n,
             COALESCE(SUM(CASE WHEN kind = 'booking' AND voided_at IS NULL AND waived_at IS NULL
                          THEN COALESCE((SELECT people FROM reservations r WHERE r.id = charges.reservation_id), 1) END), 0) p
-          FROM charges WHERE month BETWEEN ? AND ? GROUP BY month`, args: [first, cur],
+          FROM charges WHERE month BETWEEN ? AND ? AND user_id <> ${BOOTSTRAP_ID_SQL} GROUP BY month`, args: [first, cur],
   })).rows;
   const co = (await db.execute({ sql: "SELECT month, SUM(amount_try) cost FROM costs WHERE month BETWEEN ? AND ? GROUP BY month", args: [first, cur] })).rows;
   const byC = new Map(ch.map((r) => [r.month, r])), byK = new Map(co.map((r) => [r.month, Number(r.cost)]));

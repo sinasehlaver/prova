@@ -97,5 +97,17 @@ export const clearSessionCookie = (req, res) =>
 export const setSessionCookie = (req, res, token) =>
   res.cookie(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge: 400 * 24 * 3600_000, path: "/" });
 
+/**
+ * Bootstrap admin = the very first user ever created (lowest id, inserted by seed.mjs at first boot; its /i/ link is
+ * logged once). It is an OBSERVER account, not a member: hidden from everyone else's lists, never billed (no rent,
+ * excluded from every money aggregate), can't reserve/hold, but has full admin read access and can promote others.
+ * Identity is "lowest id", so it depends on which row the seed inserted first - see BOOTSTRAP-ADMIN.md.
+ */
+export const BOOTSTRAP_ID_SQL = "(SELECT MIN(id) FROM users)";
+export const bootstrapId = async (db) => (await db.execute(`SELECT ${BOOTSTRAP_ID_SQL} AS id`)).rows[0]?.id ?? null;
+export const isBootstrap = async (db, user) => user?.id != null && user.id === (await bootstrapId(db));
+/** What others see instead of the bootstrap admin's name where it can surface as an actor (alerts, cancel audit). */
+export const OBSERVER_NAME = "Yönetici";
+
 /** Normalize email for case-insensitive comparison. */
 export const normEmail = (e) => String(e ?? "").trim().toLowerCase();

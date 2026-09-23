@@ -1,8 +1,31 @@
 // Member credit = money the community owes the member back. Never stored as a balance - derived from receipts:
 //   owed = overpayments on ok receipts + part-payments sitting on charges that were later voided/waived - admin settlements.
 // A rejected receipt (status no longer 'ok') drops out by itself. Whole TRY.
-import { fail } from "./billing.mjs";
+import { COVERED_SQL, fail, monthRange, nextMonth, projectedSub } from "./billing.mjs";
 import { serial } from "./serial.mjs";
+import { currentMonth } from "./tz.mjs";
+
+/**
+ * DISPLAY-ONLY forward look (decided 2026-09-23): how much of `month`'s still-open amount (`needTry` = kalan + planned
+ * rent) the member's current credit would cover, if the credit were spent oldest-first on everything owed BEFORE
+ * this month (older debt + earlier future months' open charges and planned rents). Nothing is applied or stored -
+ * credit stays manual (admin "Alacaktan öde" / "Alacağı kapat"). null for past months or when there is no credit.
+ */
+export async function creditOutlook(db, user, month, needTry, balanceTry) {
+  if (!(balanceTry > 0) || month < currentMonth()) return null;
+  const prior = Number((await db.execute({
+    sql: `SELECT COALESCE(SUM(MAX(c.amount_try - ${COVERED_SQL}, 0)), 0) AS owed FROM charges c
+          WHERE c.user_id = ? AND c.month < ? AND c.voided_at IS NULL AND c.waived_at IS NULL AND c.paid_receipt_id IS NULL`,
+    args: [user.id, month],
+  })).rows[0].owed);
+  let planned = 0;
+  for (const m of monthRange(nextMonth(currentMonth()), month)) {
+    if (m === month) break;
+    planned += (await projectedSub(db, user, m))?.amount_try ?? 0;
+  }
+  const available = Math.max(0, balanceTry - prior - planned);
+  return { need_try: needTry, prior_try: prior + planned, available_try: available, covered_try: Math.min(available, needTry) };
+}
 
 export async function creditBalance(db, userId) {
   const r = (await db.execute({

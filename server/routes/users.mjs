@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAdmin, newToken, setSessionCookie, normEmail } from "../lib/auth.mjs";
+import { bootstrapId, requireAdmin, newToken, setSessionCookie, normEmail } from "../lib/auth.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -12,18 +12,24 @@ const adminUser = ({ id, name, phone, email, role, active, status, joined_month,
 export default ({ db }) => {
   const r = Router();
   r.use("/users", requireAdmin);
-  const byId = async (id) => (await db.execute({ sql: "SELECT * FROM users WHERE id = ?", args: [id] })).rows[0];
+  // The bootstrap admin is invisible to every OTHER admin here too: a lookup of its id by someone else is a 404, so a
+  // later-promoted admin can't demote / deactivate it or (worse) regenerate its invite token = take over its session.
+  const byId = async (id, req) => {
+    const u = (await db.execute({ sql: "SELECT * FROM users WHERE id = ?", args: [id] })).rows[0];
+    if (u && req && u.id !== req.user.id && u.id === (await bootstrapId(db))) return undefined;
+    return u;
+  };
 
   // The bootstrap admin (lowest id, created by seed.mjs at first boot) is hidden from the Üyeler list for every OTHER
-  // user (member or admin) — they still see themselves when they view the list. Only this list is affected; the
-  // bootstrap admin's own /me, login, requireAdmin, etc. are untouched.
+  // user (member or admin) — they still see themselves when they view the list. Their own /me, login, requireAdmin,
+  // etc. are untouched.
   r.get("/users", async (req, res) => {
-    const bootstrapId = (await db.execute("SELECT MIN(id) AS id FROM users")).rows[0].id;
-    const isBootstrapAdmin = req.user.id === bootstrapId;
+    const bid = await bootstrapId(db);
+    const self = req.user.id === bid;
     const { rows } = await db.execute({
-      sql: "SELECT * FROM users" + (isBootstrapAdmin ? "" : " WHERE id <> ?") +
+      sql: "SELECT * FROM users" + (self ? "" : " WHERE id <> ?") +
         " ORDER BY (status = 'pending') DESC, active DESC, role, name COLLATE NOCASE",
-      args: isBootstrapAdmin ? [] : [bootstrapId],
+      args: self ? [] : [bid],
     });
     res.json(rows.map((u) => adminUser(u)));
   });
@@ -48,7 +54,7 @@ export default ({ db }) => {
   });
 
   r.post("/users/:id/regenerate-invite", async (req, res) => {
-    const u = await byId(req.params.id);
+    const u = await byId(req.params.id, req);
     if (!u) return res.status(404).json({ error: "Bulunamadı" });
     await db.execute({ sql: "UPDATE users SET invite_token = ? WHERE id = ?", args: [newToken(), u.id] });
     const n = await byId(u.id);
@@ -59,7 +65,7 @@ export default ({ db }) => {
   // Self-signup queue: approve = becomes a normal active member (joined this month); reject = the pending account is deleted
   // (it can't own any data: every app API is 403 for it).
   r.post("/users/:id/approve", async (req, res) => {
-    const u = await byId(req.params.id);
+    const u = await byId(req.params.id, req);
     if (!u) return res.status(404).json({ error: "Bulunamadı" });
     if (u.status !== "pending") return res.status(409).json({ error: "Bu hesap onay bekleyen bir kayıt değil" });
     await db.execute({ sql: "UPDATE users SET status = 'approved', active = 1, joined_month = ? WHERE id = ?", args: [currentMonth(), u.id] });
@@ -67,7 +73,7 @@ export default ({ db }) => {
   });
 
   r.post("/users/:id/reject", async (req, res) => {
-    const u = await byId(req.params.id);
+    const u = await byId(req.params.id, req);
     if (!u) return res.status(404).json({ error: "Bulunamadı" });
     if (u.status !== "pending") return res.status(409).json({ error: "Bu hesap onay bekleyen bir kayıt değil" });
     await db.execute({ sql: "DELETE FROM users WHERE id = ? AND status = 'pending'", args: [u.id] });
@@ -75,7 +81,7 @@ export default ({ db }) => {
   });
 
   r.patch("/users/:id", async (req, res) => {
-    const u = await byId(req.params.id);
+    const u = await byId(req.params.id, req);
     if (!u) return res.status(404).json({ error: "Bulunamadı" });
     const b = req.body ?? {};
     if (u.status === "pending") return res.status(409).json({ error: "Önce onayla ya da reddet" });

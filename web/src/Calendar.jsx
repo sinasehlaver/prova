@@ -34,7 +34,8 @@ const TOUCH_ARM_MS = 220, MOVE_CANCEL_PX = 10;
 
 /** Hour grid for 1 day (phone) or 7 days (wide). Booked blocks span rows; free slots are buttons.
  *  onSelect(day, hour, hours) fires for both a plain tap/click (hours=1) and a drag spanning multiple free hours. */
-function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes }) {
+// readOnly (bootstrap/observer admin): free hours render as plain "Boş" cells, not selectable.
+function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes, readOnly = false }) {
   const multi = days.length > 1;
   const cells = [];
   const [drag, setDrag] = useState(null); // { day, h0, hours } — visual span while a drag is in progress
@@ -148,6 +149,14 @@ function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes }) {
       if (covered.has(row)) continue;
       const past = d + h * H <= now;
       const inDrag = drag && drag.day === d && h >= drag.h0 && h < drag.h0 + drag.hours;
+      if (readOnly) {
+        cells.push(
+          <div key={`f${d}-${h}`} className="slot ro" style={{ gridColumn: col, gridRow: row }} aria-label={`${fmtLong(d)} ${hourLabel(h)} ${past ? tr.cal.pastSlot : tr.cal.free}`}>
+            {!past && !multi && <span className="slot-label">{tr.cal.free}</span>}
+          </div>
+        );
+        continue;
+      }
       cells.push(
         <button key={`f${d}-${h}`} className={"slot" + (inDrag ? " dragging" : "")} style={{ gridColumn: col, gridRow: row }} disabled={past}
           data-day={d} data-hour={h}
@@ -398,22 +407,27 @@ export default function Calendar({ me }) {
     <section className="cal">
       <div className="page-head">
         <h2>{tr.cal.title}</h2>
-        <button className="btn primary" onClick={() => setSheet({ kind: "new", day: view === "week" ? Math.max(today, wk) : sel, hour: firstFree() })}>
-          <PlusIcon width="18" height="18" />{tr.cal.book}
-        </button>
+        {!me.observer && (
+          <button className="btn primary" onClick={() => setSheet({ kind: "new", day: view === "week" ? Math.max(today, wk) : sel, hour: firstFree() })}>
+            <PlusIcon width="18" height="18" />{tr.cal.book}
+          </button>
+        )}
       </div>
+      {me.observer && <p className="notice observer-note" role="note">{tr.cal.observer}</p>}
 
-      <div className="seg view-toggle" role="radiogroup" aria-label={tr.cal.viewLabel}>
-        {[["day", tr.cal.viewDay], ["week", tr.cal.viewWeek]].map(([v, label]) => (
-          <button key={v} type="button" role="radio" aria-checked={view === v} onClick={() => setView(v)}>{label}</button>
-        ))}
-      </div>
+      <div className="cal-sticky">
+        <div className="seg view-toggle" role="radiogroup" aria-label={tr.cal.viewLabel}>
+          {[["day", tr.cal.viewDay], ["week", tr.cal.viewWeek]].map(([v, label]) => (
+            <button key={v} type="button" role="radio" aria-checked={view === v} onClick={() => setView(v)}>{label}</button>
+          ))}
+        </div>
 
-      <div className="week-nav">
-        <button className="icon-btn" onClick={() => go(-1)} disabled={!prevOk} aria-label={view === "week" ? tr.cal.weekPrev : tr.cal.dayPrev}><ChevronLeftIcon /></button>
-        <strong className="num">{view === "week" ? `${fmtShort(wk)} – ${fmtShort(wk + 6 * D)}` : fmtLong(sel)}</strong>
-        <button className="icon-btn" onClick={() => go(1)} disabled={!nextOk} aria-label={view === "week" ? tr.cal.weekNext : tr.cal.dayNext}><ChevronRightIcon /></button>
-        {!atToday && <button className="btn sm ghost" onClick={() => setSel(today)}>{tr.cal.today}</button>}
+        <div className="week-nav">
+          <button className="icon-btn" onClick={() => go(-1)} disabled={!prevOk} aria-label={view === "week" ? tr.cal.weekPrev : tr.cal.dayPrev}><ChevronLeftIcon /></button>
+          <strong className="num">{view === "week" ? `${fmtShort(wk)} – ${fmtShort(wk + 6 * D)}` : fmtLong(sel)}</strong>
+          <button className="icon-btn" onClick={() => go(1)} disabled={!nextOk} aria-label={view === "week" ? tr.cal.weekNext : tr.cal.dayNext}><ChevronRightIcon /></button>
+          {!atToday && <button className="btn sm ghost" onClick={() => setSel(today)}>{tr.cal.today}</button>}
+        </div>
       </div>
       {view === "day" && (
         <div className="strip" role="tablist" aria-label={tr.cal.days} ref={stripRef}>
@@ -427,7 +441,7 @@ export default function Calendar({ me }) {
 
       {res ? (
         <div className="card cal-card">
-          <Grid days={days} res={res} holds={liveHolds} now={now} meId={me.id} maxHours={maxHours}
+          <Grid days={days} res={res} holds={liveHolds} now={now} meId={me.id} maxHours={maxHours} readOnly={!!me.observer}
             onSelect={(day, hour, hours) => setSheet({ kind: "new", day, hour, hours })}
             onRes={(r) => setSheet({ kind: "view", r })} />
         </div>

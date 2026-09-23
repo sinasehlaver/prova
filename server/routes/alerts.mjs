@@ -1,8 +1,10 @@
 import { Router } from "express";
-import { requireAdmin, requireAuth } from "../lib/auth.mjs";
+import { BOOTSTRAP_ID_SQL, OBSERVER_NAME, requireAdmin, requireAuth } from "../lib/auth.mjs";
 
+// The bootstrap (observer) admin stays anonymous: its name is shown as "Yönetici" to everyone.
+const nameOf = (col, alias) => `CASE WHEN ${col} = ${BOOTSTRAP_ID_SQL} THEN '${OBSERVER_NAME}' ELSE ${alias}.name END`;
 const SELECT = `SELECT a.id, a.kind_id, k.key, k.label_problem, k.label_resolved, k.icon,
-  a.raised_by, ru.name AS raised_by_name, a.raised_at, a.closed_by, cu.name AS closed_by_name, a.closed_at
+  a.raised_by, ${nameOf("a.raised_by", "ru")} AS raised_by_name, a.raised_at, a.closed_by, ${nameOf("a.closed_by", "cu")} AS closed_by_name, a.closed_at
   FROM alerts a JOIN alert_kinds k ON k.id = a.kind_id JOIN users ru ON ru.id = a.raised_by LEFT JOIN users cu ON cu.id = a.closed_by`;
 
 const slug = (s) => s.toLocaleLowerCase("tr").replace(/ç/g, "c").replace(/ğ/g, "g").replace(/ı/g, "i").replace(/ö/g, "o").replace(/ş/g, "s").replace(/ü/g, "u")

@@ -7,13 +7,20 @@ import { join } from "node:path";
 import { openDb, migrate } from "./lib/db.mjs";
 import { seed } from "./seed.mjs";
 import { createApp } from "./app.mjs";
-import { COOKIE } from "./lib/auth.mjs";
+import { COOKIE, newToken } from "./lib/auth.mjs";
+import { currentMonth } from "./lib/tz.mjs";
 
 export async function makeTestApp() {
   const dir = mkdtempSync(join(tmpdir(), "prova-test-"));
   const db = openDb("file:" + join(dir, "t.db"));
   await migrate(db);
   await seed(db, { demo: true });
+  // t.admin = a REAL admin created after the seed (billable, can reserve) - like a later-promoted admin in production.
+  // t.boot = the seed's first user = the bootstrap/observer admin (hidden, never billed, can't reserve).
+  await db.execute({
+    sql: "INSERT INTO users (name, role, invite_token, joined_month, created_at) VALUES ('Yönetici Deneme', 'admin', ?, ?, ?)",
+    args: [newToken(), currentMonth(), Date.now()],
+  });
   const users = (await db.execute("SELECT * FROM users ORDER BY id")).rows;
   const server = createApp({ db }).listen(0, "127.0.0.1");
   await new Promise((r) => server.once("listening", r));
@@ -31,7 +38,7 @@ export async function makeTestApp() {
     });
   return {
     db, base, fetch: fetchAs,
-    admin: users[0], member: users[1], member2: users[2],
+    boot: users[0], admin: users[users.length - 1], member: users[1], member2: users[2],
     close: async () => { server.close(); db.close(); rmSync(dir, { recursive: true, force: true }); },
   };
 }

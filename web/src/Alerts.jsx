@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
+import Sheet from "./Sheet.jsx";
 import { ago, severity } from "./ago.js";
 import { fmtShort, fmtTime } from "./time.js";
 
@@ -35,40 +36,68 @@ function useOpenAlerts() {
   return [open, () => window.dispatchEvent(new Event("prova:alerts"))];
 }
 
-/** Sticky banner under the top bar, on every tab. Amber; red after >48h. Icon + text, never colour alone. */
-export function AlertBanner() {
-  const [open, changed] = useOpenAlerts();
-  const [busy, setBusy] = useState(0);
-  if (!open?.length) return null;
-  const close = async (a) => {
-    setBusy(a.id);
-    try { await api("POST", `/alerts/${a.id}/close`); } catch {} finally { setBusy(0); changed(); }
+/** Detail sheet for one open alert, opened by tapping its top-bar badge. Same resolve action as the old banner/tab. */
+function AlertDetail({ alert: a, onClose, onResolved }) {
+  const [busy, setBusy] = useState(false);
+  const urgent = severity(a.raised_at) === "urgent";
+  const Icon = urgent ? ClockIcon : WarnIcon;
+  const close = async () => {
+    setBusy(true);
+    try { await api("POST", `/alerts/${a.id}/close`); onResolved(); } catch {} finally { setBusy(false); }
   };
   return (
-    <section className="alert-banner" aria-label={tr.alerts.bannerLabel}>
-      <ul>
+    <Sheet title={a.label_problem} onClose={onClose}>
+      <div className={"alert-detail " + (urgent ? "urgent" : "warn")}>
+        <span className="alert-emoji" aria-hidden="true">{a.icon}</span>
+        <div className="alert-text">
+          <span className="alert-meta">
+            <Icon width="14" height="14" />
+            {urgent && <strong>{tr.alerts.longOpen} · </strong>}
+            {tr.alerts.raisedAgo(a.raised_by_name, agoText(a.raised_at))}
+          </span>
+        </div>
+      </div>
+      <div className="sheet-actions row end">
+        <button className="btn good" onClick={close} disabled={busy}>
+          <CheckIcon />{a.label_resolved}
+        </button>
+      </div>
+    </Sheet>
+  );
+}
+
+/** Compact icon-only badges in the top bar, next to the brand heading — replaces the old full-width sticky
+ * banner so open alerts stop eating vertical space. One badge per open alert (amber; red border after >48h),
+ * no visible text until tapped; tapping opens AlertDetail with the same resolve action. The full scrollable
+ * history/raise UI still lives on the "Uyarılar" tab (default export below). */
+export function AlertBadges() {
+  const [open, changed] = useOpenAlerts();
+  const [selId, setSelId] = useState(null);
+  useEffect(() => {
+    if (selId != null && open && !open.some((a) => a.id === selId)) setSelId(null);
+  }, [open, selId]);
+  if (!open?.length) return null;
+  const sel = open.find((a) => a.id === selId);
+  return (
+    <>
+      <div className="alert-badges" role="group" aria-label={tr.alerts.bannerLabel}>
         {open.map((a) => {
           const urgent = severity(a.raised_at) === "urgent";
-          const Icon = urgent ? ClockIcon : WarnIcon;
           return (
-            <li key={a.id} className={"alert-row " + (urgent ? "urgent" : "warn")}>
-              <span className="alert-emoji" aria-hidden="true">{a.icon}</span>
-              <div className="alert-text">
-                <b>{a.label_problem}</b>
-                <span className="alert-meta">
-                  <Icon width="14" height="14" />
-                  {urgent && <strong>{tr.alerts.longOpen} · </strong>}
-                  {tr.alerts.raisedAgo(a.raised_by_name, agoText(a.raised_at))}
-                </span>
-              </div>
-              <button className="btn good" onClick={() => close(a)} disabled={busy === a.id}>
-                <CheckIcon />{a.label_resolved}
-              </button>
-            </li>
+            <button
+              key={a.id}
+              type="button"
+              className={"alert-badge " + (urgent ? "urgent" : "warn")}
+              onClick={() => setSelId(a.id)}
+              aria-label={tr.alerts.badgeLabel(a.label_problem, urgent, tr.alerts.raisedAgo(a.raised_by_name, agoText(a.raised_at)))}
+            >
+              <span aria-hidden="true">{a.icon}</span>
+            </button>
           );
         })}
-      </ul>
-    </section>
+      </div>
+      {sel && <AlertDetail alert={sel} onClose={() => setSelId(null)} onResolved={() => { changed(); setSelId(null); }} />}
+    </>
   );
 }
 

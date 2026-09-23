@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { clearSessionCookie, newToken, requireAuth, requireSession, setSessionCookie, hashPassword, verifyPassword, normEmail } from "../lib/auth.mjs";
+import { clearSessionCookie, isBootstrap, newToken, requireAuth, requireSession, setSessionCookie, hashPassword, verifyPassword, normEmail } from "../lib/auth.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 
 export const publicUser = ({ id, name, phone, role, active, status, joined_month, email }) => ({ id, name, phone, role, active: !!active, status: status ?? "approved", joined_month, email });
@@ -42,7 +42,8 @@ export default ({ db }) => {
   const r = Router();
 
   // /me also answers for a pending (unapproved) account - that is how the web shows "Onay bekleniyor".
-  r.get("/me", requireSession, (req, res) => res.json(publicUser(req.user)));
+  // observer = "you are the bootstrap admin" (can't book, not billed). Only ever in the caller's OWN /me.
+  r.get("/me", requireSession, async (req, res) => res.json({ ...publicUser(req.user), observer: await isBootstrap(db, req.user) }));
 
   // Public self-signup: creates a PENDING account (active 0 until an admin approves) and logs the browser in with it.
   // Requires: name, email, password, optional phone.
@@ -84,7 +85,7 @@ export default ({ db }) => {
     const ok = await verifyPassword(c.password, user.password_hash);
     if (!ok) return res.status(401).json({ error: "E-posta veya şifre yanlış" });
     setSessionCookie(req, res, user.invite_token);
-    res.json(publicUser(user));
+    res.json({ ...publicUser(user), observer: await isBootstrap(db, user) }); // same shape as /me (own account)
   });
 
   // own profile only: name (required) + phone. Role / active / joined_month / email / password are never client-settable here.

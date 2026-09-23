@@ -49,7 +49,7 @@ test("export json: attachment, all money tables, no secrets, no pdf by default",
   assert.match(r.headers.get("content-disposition"), /^attachment; filename="prova-yedek-\d{4}-\d{2}-\d{2}\.json"$/);
   const j = await r.json();
   for (const k of ["users", "fees", "reservations", "reservation_attendees", "charges", "receipts", "receipt_charges", "costs", "cost_templates", "settings", "alert_kinds", "alerts"]) assert.ok(Array.isArray(j[k]), k);
-  assert.equal(j.users.length, 4);
+  assert.equal(j.users.length, 5); // the backup is complete: seed's 4 (incl. the hidden bootstrap admin) + t.admin
   assert.ok(j.users.every((u) => !("invite_token" in u)), "invite tokens are session secrets");
   assert.ok(!JSON.stringify(j).includes(t.admin.invite_token));
   assert.ok(j.charges.some((c) => c.kind === "subscription" && c.user_id === t.member.id));

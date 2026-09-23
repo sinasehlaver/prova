@@ -1,7 +1,7 @@
 {
-  "name": "Prova — prova odası",
-  "short_name": "Prova",
-  "description": "Prova odası rezervasyonu, aidat ve dekont takibi",
+  "name": "Yüzen Oda",
+  "short_name": "Yüzen Oda",
+  "description": "Yüzen Oda rezervasyonu, aidat ve dekont takibi",
   "lang": "tr",
   "dir": "ltr",
   "start_url": "/",

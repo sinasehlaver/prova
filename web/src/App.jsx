@@ -5,7 +5,7 @@ import { BellIcon, CalendarIcon, MoonIcon, ShieldIcon, SunIcon, WalletIcon } fro
 import Admin from "./Admin.jsx";
 import Billing from "./Billing.jsx";
 import Calendar from "./Calendar.jsx";
-import Alerts, { AlertBanner } from "./Alerts.jsx";
+import Alerts, { AlertBadges } from "./Alerts.jsx";
 import AlertKinds from "./AlertKinds.jsx";
 import Profile from "./Profile.jsx";
 import { Boot, ErrorState, Skeleton } from "./States.jsx";
@@ -181,7 +181,7 @@ export default function App() {
   // The cookie is shared by all tabs of this browser: re-validate the identity on focus and after any 401/403.
   const recheck = useCallback(() =>
     api("GET", "/me").then(
-      (n) => setMe((o) => (o && o.id === n.id && o.role === n.role && o.name === n.name && o.phone === n.phone && o.status === n.status ? o : n)),
+      (n) => setMe((o) => (o && o.id === n.id && o.role === n.role && o.name === n.name && o.phone === n.phone && o.status === n.status && o.observer === n.observer ? o : n)),
       (e) => { if (e.status === 401) setMe(null); }), []);
   useEffect(() => {
     let last = 0;
@@ -236,7 +236,10 @@ function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
   return (
     <div className="shell">
       <header className="topbar">
-        <h1 className="brand">{tr.app}</h1>
+        <div className="brand-row">
+          <h1 className="brand">{tr.app}</h1>
+          <AlertBadges />
+        </div>
         <button className="who-btn" onClick={() => setProfile(true)} aria-label={`${tr.profile.open}: ${me.name}`} aria-haspopup="dialog">
           <span className="who-avatar" aria-hidden="true">{me.name.slice(0, 1).toLocaleUpperCase("tr")}</span>
           <span>{me.name}</span>
@@ -245,7 +248,6 @@ function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
           {theme === "dark" ? <SunIcon /> : <MoonIcon />}
         </button>
       </header>
-      <AlertBanner />
       <main className="page" key={`${me.id}:${me.role}`}>
         {active === "admin" ? <AdminGate me={me} recheck={recheck}><Admin me={me} extra={<AlertKinds />} pendingCount={pendingCount} /></AdminGate> : active === "payments" ? <Billing /> : active === "alerts" ? <Alerts /> : active === "calendar" ? <Calendar me={me} /> : <Placeholder id={active} />}
       </main>

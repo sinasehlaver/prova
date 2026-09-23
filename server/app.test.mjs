@@ -52,23 +52,81 @@ test("role gating", async () => {
 });
 
 test("bootstrap admin (lowest id, from seed) is hidden from GET /users for everyone else; a later-promoted admin stays visible", async () => {
-  // promote an existing member to admin, so we have a non-bootstrap admin's eye view
-  const promoted = await (await t.fetch(`/api/users/${t.member2.id}`, { method: "PATCH", as: t.admin, body: { role: "admin" } })).json();
+  // the BOOTSTRAP admin promotes an existing member to admin ("make users admins") - so we have a non-bootstrap admin's eye view
+  const promoted = await (await t.fetch(`/api/users/${t.member2.id}`, { method: "PATCH", as: t.boot, body: { role: "admin" } })).json();
   assert.equal(promoted.role, "admin");
 
   const listFromPromoted = await (await t.fetch("/api/users", { as: t.member2 })).json();
-  assert.ok(!listFromPromoted.some((u) => u.id === t.admin.id), "bootstrap admin must not appear in a promoted admin's list");
+  assert.ok(!listFromPromoted.some((u) => u.id === t.boot.id), "bootstrap admin must not appear in a promoted admin's list");
   assert.ok(listFromPromoted.some((u) => u.id === t.member2.id && u.role === "admin"), "the promoted admin sees themselves");
 
   const listFromMember = await (await t.fetch("/api/users", { as: t.member })).status; // members are 403, can't see any list
   assert.equal(listFromMember, 403);
+  const members = await (await t.fetch("/api/members", { as: t.member })).json(); // the member-level id+name picker
+  assert.ok(!members.some((u) => u.id === t.boot.id), "bootstrap admin must not appear in /api/members either");
+  assert.ok((await (await t.fetch("/api/members", { as: t.boot })).json()).some((u) => u.id === t.boot.id), "…except to itself");
 
-  const listFromBootstrap = await (await t.fetch("/api/users", { as: t.admin })).json();
-  assert.ok(listFromBootstrap.some((u) => u.id === t.admin.id), "the bootstrap admin still sees themselves in their own list");
+  const listFromBootstrap = await (await t.fetch("/api/users", { as: t.boot })).json();
+  assert.ok(listFromBootstrap.some((u) => u.id === t.boot.id), "the bootstrap admin still sees themselves in their own list");
   assert.ok(listFromBootstrap.some((u) => u.id === t.member2.id && u.role === "admin"), "promoted admin also visible to the bootstrap admin");
 
+  // another admin can't reach the bootstrap admin by id (no demote / deactivate / token takeover / billing peek)
+  for (const [path, method, body] of [
+    [`/api/users/${t.boot.id}`, "PATCH", { role: "member" }],
+    [`/api/users/${t.boot.id}/regenerate-invite`, "POST", undefined],
+    [`/api/admin/users/${t.boot.id}/billing`, "GET", undefined],
+    [`/api/admin/users/${t.boot.id}/charges`, "POST", { month: "2026-01", amount_try: 100, note: "x" }],
+  ]) assert.equal((await t.fetch(path, { method, as: t.member2, body })).status, 404, `${method} ${path}`);
+  assert.equal((await t.fetch(`/api/admin/users/${t.boot.id}/billing`, { as: t.boot })).status, 200, "own page still works");
+
+  // /me says observer only to the bootstrap admin itself
+  assert.equal((await (await t.fetch("/api/me", { as: t.boot })).json()).observer, true);
+  assert.equal((await (await t.fetch("/api/me", { as: t.admin })).json()).observer, false);
+
   // demote back so later tests aren't affected by this test
-  await t.fetch(`/api/users/${t.member2.id}`, { method: "PATCH", as: t.admin, body: { role: "member" } });
+  await t.fetch(`/api/users/${t.member2.id}`, { method: "PATCH", as: t.boot, body: { role: "member" } });
+});
+
+test("bootstrap admin: can't reserve or hold, never billed, not in economics; full admin read access", async () => {
+  const H = 3600_000;
+  const start = Math.ceil(Date.now() / H) * H + 40 * 24 * H;
+  const r = await t.fetch("/api/reservations", { method: "POST", as: t.boot, body: { start_ms: start, hours: 1 } });
+  assert.equal(r.status, 403);
+  assert.match((await r.json()).error, /rezervasyon yapamaz/);
+  assert.equal((await t.fetch("/api/holds", { method: "POST", as: t.boot, body: { start_ms: start, hours: 1 } })).status, 403);
+  // a real admin (not the bootstrap one) still books normally
+  assert.equal((await t.fetch("/api/reservations", { method: "POST", as: t.admin, body: { start_ms: start + 5 * H, hours: 1 } })).status, 201);
+
+  // own billing page: opens, nothing to pay, no charge materialised, no planned rent for next month
+  const bill = await (await t.fetch("/api/billing", { as: t.boot })).json();
+  assert.equal(bill.kalan, 0);
+  assert.equal(bill.items.length, 0);
+  assert.equal(bill.other_open.length, 0);
+  const next = bill.months[bill.months.indexOf(bill.month) + 1];
+  assert.equal((await (await t.fetch(`/api/billing?month=${next}`, { as: t.boot })).json()).projected_try, 0);
+
+  // economics: the summary materialises every REAL active member's rent, not the bootstrap admin's; a legacy charge
+  // on the bootstrap admin (from before this rule) doesn't count toward income or member numbers either
+  const eco1 = await (await t.fetch("/api/admin/economics", { as: t.boot })).json();
+  assert.equal((await t.db.execute({ sql: "SELECT COUNT(*) n FROM charges WHERE user_id = ?", args: [t.boot.id] })).rows[0].n, 0);
+  await t.db.execute({ sql: "INSERT INTO charges (user_id, month, kind, amount_try) VALUES (?, ?, 'subscription', 99999)", args: [t.boot.id, eco1.month] });
+  const eco2 = await (await t.fetch("/api/admin/economics", { as: t.boot })).json();
+  assert.deepEqual(eco2.months.at(-1), eco1.months.at(-1), "legacy bootstrap charge must not reach economics");
+  const ov = await (await t.fetch("/api/admin/billing/overview", { as: t.boot })).json();
+  assert.ok(!ov.users.some((u) => u.id === t.boot.id));
+  await t.db.execute({ sql: "DELETE FROM charges WHERE user_id = ?", args: [t.boot.id] });
+  // no ad-hoc charge can be put on it either (even by itself)
+  assert.equal((await t.fetch(`/api/admin/users/${t.boot.id}/charges`, { method: "POST", as: t.boot, body: { month: eco1.month, amount_try: 100, note: "x" } })).status, 409);
+
+  // observe everything: every admin read works for the bootstrap admin
+  for (const p of ["/api/users", "/api/admin/billing/overview", "/api/admin/receipts", "/api/admin/economics", "/api/admin/fees",
+    "/api/admin/settings", "/api/admin/export", "/api/reservations/audit", "/api/alerts", `/api/admin/users/${t.member.id}/billing`])
+    assert.equal((await t.fetch(p, { as: t.boot })).status, 200, p);
+
+  // alerts raised by it show "Yönetici", never its real name
+  const a = await (await t.fetch("/api/alerts", { method: "POST", as: t.boot, body: { kind_id: 3 } })).json();
+  assert.equal(a.raised_by_name, "Yönetici");
+  await t.fetch(`/api/alerts/${a.id}/close`, { method: "POST", as: t.boot });
 });
 
 test("admin creates member, regenerate invalidates old link, deactivate blocks login", async () => {

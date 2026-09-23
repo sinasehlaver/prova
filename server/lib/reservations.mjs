@@ -3,7 +3,10 @@
 import { serial } from "./serial.mjs";
 import { addBookingCharges, voidBookingCharges } from "./billing.mjs";
 import { dropHoldRaw, foreignHoldRaw } from "./holds.mjs";
+import { bootstrapId } from "./auth.mjs";
 export const HOUR = 3600_000;
+/** The bootstrap admin is an observer account (not a member): it can't book or hold a slot. */
+export const OBSERVER_NO_BOOKING = "Gözlemci yönetici hesabı rezervasyon yapamaz";
 export const DEFAULT_MAX_HOURS = 4;
 export const MAX_PEOPLE = 20;
 
@@ -28,7 +31,7 @@ export async function listReservations(db, from, to) {
 }
 
 /**
- * Create a booking. Throws Error with .status (400 validation, 409 overlap).
+ * Create a booking. Throws Error with .status (400 validation, 403 bootstrap/observer admin, 409 overlap).
  * startMs must be whole-hour aligned and in the future; hours 1..max; people 1..MAX_PEOPLE (guests need not be members,
  * the booker pays people x per-person fee).
  */
@@ -41,6 +44,7 @@ export function createReservation(db, { bookerId, startMs, hours, note = null, p
     if (startMs <= now) throw fail(400, "Geçmiş bir saate rezervasyon yapılamaz");
     const endMs = startMs + hours * HOUR;
     if (!Number.isInteger(people) || people < 1 || people > MAX_PEOPLE) throw fail(400, `Kişi sayısı 1-${MAX_PEOPLE} olmalı`);
+    if (bookerId === (await bootstrapId(db))) throw fail(403, OBSERVER_NO_BOOKING);
     const cleanNote = String(note ?? "").trim().slice(0, 200) || null;
 
     const tx = await db.transaction("write");
