@@ -266,24 +266,29 @@ button.link:active { transform: scale(0.98); }
 .strip-day[aria-selected="true"] { background: var(--accent); border-color: transparent; color: var(--accent-ink); box-shadow: var(--shadow-md); }
 .strip-day[aria-selected="true"] b { color: var(--accent-ink); }
 .cal-date { font-size: var(--fs-2); font-weight: 600; margin: 0 0 var(--s-2); text-transform: capitalize; }
-.week-nav { display: flex; align-items: center; gap: var(--s-2); margin-bottom: var(--s-3); }
-.week-nav strong { flex: 1 1 auto; min-width: 0; max-width: 16rem; text-align: center; font-family: var(--font-display); text-transform: capitalize; }
-.view-toggle { margin-bottom: var(--s-3); }
+.week-nav { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); width: 100%; margin-bottom: var(--s-2); }
+.week-mid { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: center; gap: var(--s-2); }
+.week-nav strong { min-width: 0; text-align: center; font-family: var(--font-display); text-transform: capitalize; }
+.view-toggle { margin-bottom: var(--s-2); }
 @media (min-width: 900px) { .view-toggle { max-width: 16rem; } }
 /* Pin the Gün/Hafta toggle + date-range nav so they stay put while the day strip and hour grid scroll underneath
    (whole-page scroll, no separate scroll container — same sticky-under-topbar pattern as .alert-banner). */
 .cal-sticky {
   position: sticky; top: calc(var(--topbar-h) + env(safe-area-inset-top)); z-index: 3;
-  margin: 0 calc(var(--s-4) * -1); padding: var(--s-2) var(--s-4) 0;
-  background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--line);
+  margin: 0 calc(var(--s-4) * -1) var(--s-3); padding: var(--s-2) var(--s-4) var(--s-1);
+  background: var(--bg); /* opaque: scrolled grid must not show through (no backdrop-filter: keep sticky-only) */
+  border-bottom: 1px solid var(--line); box-shadow: var(--shadow-sm);
 }
+.cal-sticky .page-head { margin-bottom: var(--s-2); }
+.cal-sticky .strip { margin-bottom: 0; padding-bottom: var(--s-1); }
+.cal-sticky .strip-day { min-height: 3.5rem; }
 .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 .icon-btn:disabled:hover { background: transparent; color: var(--muted); }
 .cal-card { padding: var(--s-2); overflow: hidden; }
 .cal-grid { --row-h: 3.5rem; display: grid; gap: var(--s-1); grid-template-columns: 3rem repeat(var(--cols), minmax(0, 1fr)); grid-template-rows: auto; grid-auto-rows: var(--row-h); }
-.cal-day { margin-top: calc(var(--s-1) * -1); }
-.cal-week { --row-h: 3.25rem; grid-template-rows: 3.5rem; }
+.cal-body { margin-top: calc(var(--s-1) * -1); } /* row 1 is an empty spacer (heads live in .cal-sticky) */
+.cal-week { --row-h: 3.25rem; }
+.cal-heads { grid-template-rows: 3.5rem; grid-auto-rows: auto; padding: 0 calc(var(--s-2) + 1px); }
 .cal-hour { align-self: start; padding-top: var(--s-2); font-size: var(--fs-1); color: var(--muted); text-align: right; padding-right: var(--s-2); }
 .cal-head { display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: var(--fs-1); color: var(--muted); font-weight: 600; text-transform: capitalize; border-radius: var(--r-sm); }
 .cal-head b { font: 700 var(--fs-3) var(--font-display); color: var(--text); }

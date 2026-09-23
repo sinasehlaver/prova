@@ -426,7 +426,7 @@ export function UserDetail({ user, onBack }) {
         <>
           <MonthNav month={data.month} months={data.months} onChange={load} />
           <KalanCard data={data} />
-          <CreditCover cover={data.credit_cover} />
+          <CreditCover cover={data.credit_cover} admin />
           {data.credit.balance_try > 0 && (
             <CreditCard credit={data.credit} admin>
               <form className="form-row" onSubmit={settleCredit}>
@@ -442,7 +442,7 @@ export function UserDetail({ user, onBack }) {
             </ul>
           )}
           {/* read-only item list (waive/unwaive only) - WHAT a payment covers is picked inside the payment form below */}
-          <ItemList items={data.items} empty={data.future ? tr.billing.future.empty : undefined} extra={(it) =>
+          <ItemList items={data.items} empty={data.future ? tr.billing.futureEmptyAdmin : undefined} extra={(it) =>
             it.status === "unpaid" ? <button className="btn sm ghost" onClick={() => waive(it, true)}>{A.waive}</button>
               : it.status === "waived" ? <button className="btn sm ghost" onClick={() => waive(it, false)}>{A.unwaive}</button> : null} />
           {/* order matters (user request 2026-09-23): add an extra charge first, then record the payment that covers it */}

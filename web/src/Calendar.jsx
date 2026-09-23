@@ -168,12 +168,7 @@ function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes, readOnly
     }
   });
   return (
-    <div className={"cal-grid " + (multi ? "cal-week" : "cal-day")} style={{ "--cols": days.length }}>
-      {multi && days.map((d, i) => (
-        <div key={d} className={"cal-head" + (dayStart(now) === d ? " today" : "")} style={{ gridColumn: i + 2, gridRow: 1 }}>
-          <span>{fmtWd(d)}</span><b className="num">{fmtDay(d)}</b>
-        </div>
-      ))}
+    <div className={"cal-grid cal-body " + (multi ? "cal-week" : "cal-day")} style={{ "--cols": days.length }}>
       {Array.from({ length: TO - FROM }, (_, i) => (
         <div key={i} className="cal-hour num" style={{ gridColumn: 1, gridRow: i + 2 }}>{hourLabel(FROM + i)}</div>
       ))}
@@ -182,7 +177,20 @@ function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes, readOnly
   );
 }
 
-const HOLD_REFRESH_MS = 45_000; // server TTL is ~2 min: keep the hold alive while the sheet stays open
+// Week-view weekday/date header row: lives in the sticky block (Calendar), columns mirror Grid's.
+function DayHeads({ days, now }) {
+  return (
+    <div className="cal-grid cal-heads" style={{ "--cols": days.length }}>
+      {days.map((d, i) => (
+        <div key={d} className={"cal-head" + (dayStart(now) === d ? " today" : "")} style={{ gridColumn: i + 2 }}>
+          <span>{fmtWd(d)}</span><b className="num">{fmtDay(d)}</b>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const HOLD_REFRESH_MS =45_000; // server TTL is ~2 min: keep the hold alive while the sheet stays open
 
 function NewSheet({ day, hour, hours: initialHours, res, holds, now, maxHours, maxPeople, onClose, onDone }) {
   const [h0, setH0] = useState(hour);
@@ -405,17 +413,19 @@ export default function Calendar({ me }) {
 
   return (
     <section className="cal">
-      <div className="page-head">
-        <h2>{tr.cal.title}</h2>
-        {!me.observer && (
-          <button className="btn primary" onClick={() => setSheet({ kind: "new", day: view === "week" ? Math.max(today, wk) : sel, hour: firstFree() })}>
-            <PlusIcon width="18" height="18" />{tr.cal.book}
-          </button>
-        )}
-      </div>
       {me.observer && <p className="notice observer-note" role="note">{tr.cal.observer}</p>}
 
+      {/* Everything down to the day strip is pinned under the top bar; only the hour grid scrolls. Keep this a direct child of section.cal. */}
       <div className="cal-sticky">
+        <div className="page-head">
+          <h2>{tr.cal.title}</h2>
+          {!me.observer && (
+            <button className="btn primary" onClick={() => setSheet({ kind: "new", day: view === "week" ? Math.max(today, wk) : sel, hour: firstFree() })}>
+              <PlusIcon width="18" height="18" />{tr.cal.book}
+            </button>
+          )}
+        </div>
+
         <div className="seg view-toggle" role="radiogroup" aria-label={tr.cal.viewLabel}>
           {[["day", tr.cal.viewDay], ["week", tr.cal.viewWeek]].map(([v, label]) => (
             <button key={v} type="button" role="radio" aria-checked={view === v} onClick={() => setView(v)}>{label}</button>
@@ -424,11 +434,13 @@ export default function Calendar({ me }) {
 
         <div className="week-nav">
           <button className="icon-btn" onClick={() => go(-1)} disabled={!prevOk} aria-label={view === "week" ? tr.cal.weekPrev : tr.cal.dayPrev}><ChevronLeftIcon /></button>
-          <strong className="num">{view === "week" ? `${fmtShort(wk)} – ${fmtShort(wk + 6 * D)}` : fmtLong(sel)}</strong>
+          <div className="week-mid">
+            <strong className="num">{view === "week" ? `${fmtShort(wk)} – ${fmtShort(wk + 6 * D)}` : fmtLong(sel)}</strong>
+            {!atToday && <button className="btn sm ghost" onClick={() => setSel(today)}>{tr.cal.today}</button>}
+          </div>
           <button className="icon-btn" onClick={() => go(1)} disabled={!nextOk} aria-label={view === "week" ? tr.cal.weekNext : tr.cal.dayNext}><ChevronRightIcon /></button>
-          {!atToday && <button className="btn sm ghost" onClick={() => setSel(today)}>{tr.cal.today}</button>}
         </div>
-      </div>
+        {view === "week" && <DayHeads days={days} now={now} />}
       {view === "day" && (
         <div className="strip" role="tablist" aria-label={tr.cal.days} ref={stripRef}>
           {strip.map((d) => (
@@ -438,6 +450,7 @@ export default function Calendar({ me }) {
           ))}
         </div>
       )}
+      </div>
 
       {res ? (
         <div className="card cal-card">

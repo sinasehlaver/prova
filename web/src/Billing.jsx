@@ -98,9 +98,9 @@ export function KalanCard({ data }) {
  * would first go to (older debt, earlier months' planned rent). Server-computed (creditOutlook); nothing is applied -
  * an admin still settles it by hand ("Alacaktan öde"). Renders nothing when there's no credit or nothing to cover.
  */
-export function CreditCover({ cover }) {
+export function CreditCover({ cover, admin = false }) {
   if (!cover || !(cover.need_try > 0) || !(cover.covered_try > 0)) return null;
-  const C = tr.billing.cover;
+  const C = admin ? { ...tr.billing.cover, ...tr.billing.cover.admin } : tr.billing.cover; // admin = third person; `prior` is neutral
   const full = cover.covered_try >= cover.need_try;
   return (
     <section className={"card cover" + (full ? " full" : "")} aria-label={full ? C.title : C.titlePart}>
@@ -116,12 +116,14 @@ export function CreditCover({ cover }) {
 export function CreditCard({ credit, children, admin = false }) {
   if (!credit || (credit.balance_try <= 0 && !children)) return null;
   const owed = credit.balance_try > 0;
-  const owedText = admin ? tr.billing.credit.owedAdmin : tr.billing.credit.owed;
+  const K = tr.billing.credit;
+  const owedText = admin ? K.owedAdmin : K.owed;
+  const title = admin ? K.titleAdmin : K.title;
   return (
-    <section className={"card credit" + (owed ? "" : " none")} aria-label={tr.billing.credit.title}>
-      <div className="credit-label">{tr.billing.credit.title}</div>
-      <div className="credit-amount amount">{owed ? owedText(fmtTRY(credit.balance_try)) : tr.billing.credit.none}</div>
-      {owed && <p className="hint">{tr.billing.credit.hint}</p>}
+    <section className={"card credit" + (owed ? "" : " none")} aria-label={title}>
+      <div className="credit-label">{title}</div>
+      <div className="credit-amount amount">{owed ? owedText(fmtTRY(credit.balance_try)) : K.none}</div>
+      {owed && <p className="hint">{admin ? K.hintAdmin : K.hint}</p>}
       {children}
     </section>
   );
