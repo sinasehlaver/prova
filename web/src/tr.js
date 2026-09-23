@@ -209,6 +209,7 @@ export const tr = {
     credit: {
       title: "Alacağın",
       owed: (amt) => `Topluluk sana ${amt} borçlu`,
+      owedAdmin: (amt) => `Topluluk üyeye ${amt} borçlu`,
       hint: "Fazla ödemenden kalan tutar. Yönetici iade edince ya da kapatınca burada görünmez.",
       settled: "Kapatılanlar",
       none: "Alacak yok",
@@ -219,6 +220,8 @@ export const tr = {
     uploaded: "Dekont yüklendi, yönetici onayını bekliyor.",
     receipts: "Kayıtlı ödemeler",
     view: "Dekontu aç",
+    coversSelf: "Kapsadığı kalemler",
+    owedSelf: "Topluluk sana borçlu",
   },
   admin: {
     sections: { members: "Üyeler", receipts: "Ödemeler", fees: "Ücretler", economics: "Ekonomi", settings: "Ayarlar" },

@@ -42,6 +42,30 @@ export function itemTitle(it) {
   return r ? `${tr.billing.booking} · ${dayTime.format(r.start_ms)}–${fmtTime(r.end_ms)}${r.people > 1 ? ` · ${tr.cal.peopleCount(r.people)}` : ""}` : tr.billing.booking;
 }
 
+/** Title for a receipt's covered charge (listReceipts' `charges` shape - no `reservation`/`status`, just kind/note). */
+export const chargeName = (c) => (c.kind === "subscription" ? tr.billing.subscription : c.kind === "adjustment" ? c.note || tr.billing.adjustment : tr.billing.booking);
+
+/**
+ * The money lines of a payment/receipt, shared by the admin's draft+saved views (AdminBilling.jsx) and the member's
+ * own read-only receipt row below: selected items' total, what was paid, then what that leaves - kalan borç, or
+ * where the surplus went (the month's other items, then credit the community owes). `owedLabel` lets the caller
+ * phrase the last row in their own voice (admin: third person "üyeye borçlu"; member: second person "sana borçlu").
+ */
+export function PaySummary({ count, sum, paid, spill, owed, saved, paidLabel = tr.admin.pay.paid, owedLabel = tr.admin.pay.owed, children }) {
+  const left = Math.max(0, sum - paid);
+  const P = tr.admin.pay;
+  return (
+    <dl className="pay-sum">
+      <div><dt>{P.selectedSum(count)}</dt><dd className="amount">{fmtTRY(sum)}</dd></div>
+      <div className="pay-paid"><dt>{children ? children[0] : paidLabel}</dt><dd className="amount">{children ? children[1] : fmtTRY(paid)}</dd></div>
+      {paid > 0 && left > 0 && <div className="pay-out warn"><dt>{P.left}</dt><dd className="amount">{fmtTRY(left)}</dd></div>}
+      {paid > 0 && left === 0 && spill === 0 && owed === 0 && <div className="pay-out good"><dt>{P.exact}</dt><dd><CheckG /></dd></div>}
+      {spill > 0 && <div className="pay-out"><dt>{saved ? P.spillSaved : P.spill}</dt><dd className="amount">{fmtTRY(spill)}</dd></div>}
+      {owed > 0 && <div className="pay-out good"><dt>{owedLabel}</dt><dd className="amount">{fmtTRY(owed)}</dd></div>}
+    </dl>
+  );
+}
+
 export function MonthNav({ month, months, onChange }) {
   const i = months.indexOf(month);
   const future = month > nowMonth();
@@ -89,13 +113,14 @@ export function CreditCover({ cover }) {
 }
 
 /** What the community owes the member (overpayments not yet settled). Renders nothing at 0. `children` = admin settle form. */
-export function CreditCard({ credit, children }) {
+export function CreditCard({ credit, children, admin = false }) {
   if (!credit || (credit.balance_try <= 0 && !children)) return null;
   const owed = credit.balance_try > 0;
+  const owedText = admin ? tr.billing.credit.owedAdmin : tr.billing.credit.owed;
   return (
     <section className={"card credit" + (owed ? "" : " none")} aria-label={tr.billing.credit.title}>
       <div className="credit-label">{tr.billing.credit.title}</div>
-      <div className="credit-amount amount">{owed ? tr.billing.credit.owed(fmtTRY(credit.balance_try)) : tr.billing.credit.none}</div>
+      <div className="credit-amount amount">{owed ? owedText(fmtTRY(credit.balance_try)) : tr.billing.credit.none}</div>
       {owed && <p className="hint">{tr.billing.credit.hint}</p>}
       {children}
     </section>
@@ -133,14 +158,39 @@ export function ItemList({ items, selectable, selected, onToggle, extra, empty =
   );
 }
 
+/**
+ * Own receipt, read-only. Besides the sentence (r.message), an 'ok' receipt also gets the SAME structured
+ * breakdown the admin sees for it (AdminBilling.jsx ReceiptCard/PaySummary): which items it covered, the total,
+ * what was actually paid, and what that left (kalan / spilled onto other items / credit) - previously only the
+ * admin view showed this, the member's own page had just the one sentence (mentioning only "Kalan" or the
+ * surplus/"artan" credit, never the paid/covered total). Same data the admin sees, already in this receipt's
+ * `charges`/`expected_try`/`paid_try`/`spill_try`/`overpaid_try` (listReceipts, scoped to the caller's own user_id).
+ */
 export function ReceiptRow({ r, children }) {
+  const ok = r.status === "ok";
+  const picked = r.charges.filter((c) => c.selected !== false);
   return (
     <li className="card rcpt">
       <div className="rcpt-head">
         <span className="rcpt-name">{r.filename || `Dekont #${r.id}`}</span>
-        <StatusPill status={r.status === "ok" ? "paid" : undefined} flag={r.status === "ok" ? undefined : r.status} partial={r.status === "ok" && r.remaining_try > 0} />
+        <StatusPill status={ok ? "paid" : undefined} flag={ok ? undefined : r.status} partial={ok && r.remaining_try > 0} />
       </div>
       <p className="rcpt-msg">{r.message}</p>
+      {picked.length > 0 && (
+        <div className="pay-items">
+          <div className="pay-legend">{tr.billing.coversSelf}</div>
+          <ul className="pay-covered">
+            {picked.map((c) => (
+              <li key={c.id}>
+                <span>{chargeName(c)}{c.month && c.month !== r.month && <span className="muted small"> · {monthLabel(c.month)}</span>}</span>
+                <span className="amount">{fmtTRY(c.amount_try)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {ok && <PaySummary saved count={picked.length} sum={r.expected_try} paid={r.paid_try} spill={r.spill_try} owed={r.overpaid_try}
+        paidLabel={r.from_credit ? tr.admin.pay.creditUsed : tr.admin.pay.paid} owedLabel={tr.billing.owedSelf} />}
       <div className="row wrap">
         {r.has_pdf && <a className="link" href={`/api/receipts/${r.id}/pdf`} target="_blank" rel="noreferrer">{tr.billing.view}</a>}
         <span className="muted small">{dayTime.format(r.uploaded_at)}</span>

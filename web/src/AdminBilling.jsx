@@ -3,7 +3,7 @@ import { api, apiUpload } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon } from "./icons.jsx";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
-import { CheckG, CreditCard, CreditCover, DashG, ItemList, KalanCard, MonthNav, StatusPill, UploadG, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
+import { CheckG, CreditCard, CreditCover, DashG, ItemList, KalanCard, MonthNav, PaySummary, StatusPill, UploadG, chargeName, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
 
 const A = tr.admin;
 const fmtDateTimeShort = (ms) => new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Europe/Istanbul" }).format(ms);
@@ -18,7 +18,6 @@ export function useToast() {
 }
 
 const P = A.pay;
-const chargeName = (c) => (c.kind === "subscription" ? tr.billing.subscription : c.kind === "adjustment" ? c.note || tr.billing.adjustment : tr.billing.booking);
 const DraftG = () => (
   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeDasharray="3 3.2" aria-hidden="true"><circle cx="12" cy="12" r="8" /></svg>
 );
@@ -34,26 +33,6 @@ function PdfToggle({ src, title }) {
       </div>
       {open && <embed className="embed" src={src} type="application/pdf" title={title || "Dekont"} />}
     </>
-  );
-}
-
-/**
- * The money lines of a payment, the same shape before (draft: `children` = the amount input) and after saving:
- * selected items' total, what was paid, then what that leaves - kalan borç, or where the surplus went (the month's
- * other items, then credit the community owes). Saved cards feed the SERVER's numbers (expected/paid/spill/overpaid
- * from listReceipts); the draft preview mirrors allocateRaw's order on the same monthView data - the server decides.
- */
-function PaySummary({ count, sum, paid, spill, owed, saved, paidLabel = P.paid, children }) {
-  const left = Math.max(0, sum - paid);
-  return (
-    <dl className="pay-sum">
-      <div><dt>{P.selectedSum(count)}</dt><dd className="amount">{fmtTRY(sum)}</dd></div>
-      <div className="pay-paid"><dt>{children ? children[0] : paidLabel}</dt><dd className="amount">{children ? children[1] : fmtTRY(paid)}</dd></div>
-      {paid > 0 && left > 0 && <div className="pay-out warn"><dt>{P.left}</dt><dd className="amount">{fmtTRY(left)}</dd></div>}
-      {paid > 0 && left === 0 && spill === 0 && owed === 0 && <div className="pay-out good"><dt>{P.exact}</dt><dd><CheckG /></dd></div>}
-      {spill > 0 && <div className="pay-out"><dt>{saved ? P.spillSaved : P.spill}</dt><dd className="amount">{fmtTRY(spill)}</dd></div>}
-      {owed > 0 && <div className="pay-out good"><dt>{P.owed}</dt><dd className="amount">{fmtTRY(owed)}</dd></div>}
-    </dl>
   );
 }
 
@@ -449,7 +428,7 @@ export function UserDetail({ user, onBack }) {
           <KalanCard data={data} />
           <CreditCover cover={data.credit_cover} />
           {data.credit.balance_try > 0 && (
-            <CreditCard credit={data.credit}>
+            <CreditCard credit={data.credit} admin>
               <form className="form-row" onSubmit={settleCredit}>
                 <label className="field"><span>{A.credit.amountLabel}</span><input type="number" min="1" max={data.credit.balance_try} step="1" value={settle.amount} onChange={(e) => setSettle({ ...settle, amount: e.target.value })} /></label>
                 <label className="field"><span>{A.notePh}</span><input maxLength={200} placeholder={A.credit.notePh} value={settle.note} onChange={(e) => setSettle({ ...settle, note: e.target.value })} /></label>
