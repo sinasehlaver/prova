@@ -1,6 +1,8 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { makeTestApp } from "./test-helpers.mjs";
+import { newToken } from "./lib/auth.mjs";
+import { currentMonth } from "./lib/tz.mjs";
 
 const H = 3600_000;
 const t = await makeTestApp();
@@ -148,4 +150,25 @@ test("cannot cancel a started reservation", async () => {
     sql: "INSERT INTO reservations (booker_id, start_ms, end_ms) VALUES (?,?,?)", args: [t.member.id, s, s + 2 * H],
   });
   assert.equal((await t.fetch(`/api/reservations/${lastInsertRowid}`, { method: "DELETE", as: t.member })).status, 409);
+});
+
+test("'listener' role: can't book or hold, but sees reservations and appears in /members", async () => {
+  const { lastInsertRowid } = await t.db.execute({
+    sql: "INSERT INTO users (name, role, invite_token, joined_month, created_at) VALUES ('Dinleyici Deneme', 'listener', ?, ?, ?)",
+    args: [newToken(), currentMonth(), Date.now()],
+  });
+  const listener = (await t.db.execute({ sql: "SELECT * FROM users WHERE id = ?", args: [lastInsertRowid] })).rows[0];
+
+  const s = day(10);
+  const r = await book(listener, s, 1);
+  assert.equal(r.status, 403);
+
+  assert.equal((await t.fetch("/api/holds", { method: "POST", as: listener, body: { start_ms: s, hours: 1 } })).status, 403);
+
+  // still a normal, visible member: shows up in /members and can see the calendar
+  const members = await (await t.fetch("/api/members", { as: t.member })).json();
+  assert.ok(members.some((m) => m.id === listener.id));
+  const { id } = await (await book(t.member, s, 1)).json();
+  const list = await (await t.fetch(`/api/reservations?from=${s - H}&to=${s + H}`, { as: listener })).json();
+  assert.ok(list.some((x) => x.id === id));
 });

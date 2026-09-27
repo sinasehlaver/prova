@@ -643,3 +643,16 @@ test("credit looks forward (display-only) and can pay a future month's rent expl
   assert.equal((await bill(u)).credit.balance_try, 200);
   assert.equal(sub(await bill(u, NEXT)).status, "paid");
 });
+
+test("'listener' role is billed exactly like a normal member (subscription charge, appears in overview) but can't book", async () => {
+  const listener = await mk("Dinleyici Faturalı");
+  await t.db.execute({ sql: "UPDATE users SET role = 'listener' WHERE id = ?", args: [listener.id] });
+  listener.role = "listener";
+
+  const b = await bill(listener);
+  assert.equal(sub(b).amount_try, 1500); // ensureMonth materialises the monthly fee just like any member
+  const ov = await J(await t.fetch("/api/admin/billing/overview", { as: t.admin }));
+  assert.ok(ov.users.some((u) => u.id === listener.id));
+
+  assert.equal((await t.fetch("/api/reservations", { method: "POST", as: listener, body: { start_ms: day(20), hours: 1 } })).status, 403);
+});

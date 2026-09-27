@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { BOOTSTRAP_ID_SQL, OBSERVER_NAME, isBootstrap, requireAdmin, requireAuth } from "../lib/auth.mjs";
 import { listHolds, releaseHold, setHold } from "../lib/holds.mjs";
-import { MAX_PEOPLE, OBSERVER_NO_BOOKING, cancelReservation, createReservation, listReservations, maxHours } from "../lib/reservations.mjs";
+import { LISTENER_NO_BOOKING, MAX_PEOPLE, OBSERVER_NO_BOOKING, cancelReservation, createReservation, listReservations, maxHours } from "../lib/reservations.mjs";
 
 const DAY = 86_400_000;
 
@@ -34,7 +34,7 @@ export default ({ db }) => {
   r.post("/reservations", guard(async (req, res) => {
     const b = req.body ?? {};
     const id = await createReservation(db, {
-      bookerId: req.user.id, startMs: b.start_ms, hours: b.hours, note: b.note, people: b.people ?? 1,
+      bookerId: req.user.id, bookerRole: req.user.role, startMs: b.start_ms, hours: b.hours, note: b.note, people: b.people ?? 1,
     });
     const [created] = await listReservations(db, b.start_ms, b.start_ms + 1);
     res.status(201).json(created ?? { id });
@@ -50,6 +50,7 @@ export default ({ db }) => {
   // Soft holds ("X is choosing these hours"): UX layer above the DB overlap check. One live hold per user, ~2 min TTL.
   r.get("/holds", guard(async (req, res) => res.json(await listHolds(db, req.user.id))));
   r.post("/holds", guard(async (req, res) => {
+    if (req.user.role === "listener") return res.status(403).json({ error: LISTENER_NO_BOOKING });
     if (await isBootstrap(db, req.user)) return res.status(403).json({ error: OBSERVER_NO_BOOKING });
     const b = req.body ?? {};
     res.json(await setHold(db, { userId: req.user.id, startMs: b.start_ms, hours: b.hours, maxHours: await maxHours(db) }));

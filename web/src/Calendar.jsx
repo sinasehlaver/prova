@@ -34,7 +34,7 @@ const TOUCH_ARM_MS = 220, MOVE_CANCEL_PX = 10;
 
 /** Hour grid for 1 day (phone) or 7 days (wide). Booked blocks span rows; free slots are buttons.
  *  onSelect(day, hour, hours) fires for both a plain tap/click (hours=1) and a drag spanning multiple free hours. */
-// readOnly (bootstrap/observer admin): free hours render as plain "Boş" cells, not selectable.
+// readOnly (bootstrap/observer admin, or a 'listener' member): free hours render as plain "Boş" cells, not selectable.
 function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes, readOnly = false }) {
   const multi = days.length > 1;
   const cells = [];
@@ -411,15 +411,18 @@ export default function Calendar({ me }) {
   const firstFree = () => { for (let h = FROM; h < TO; h++) if (shown + h * H > now) return h; return FROM; };
   useEffect(() => { stripRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ inline: "center", block: "nearest" }); }, [sel, view]);
 
+  const readOnly = !!me.observer || me.role === "listener";
+
   return (
     <section className="cal">
       {me.observer && <p className="notice observer-note" role="note">{tr.cal.observer}</p>}
+      {me.role === "listener" && <p className="notice observer-note" role="note">{tr.cal.listener}</p>}
 
       {/* Everything down to the day strip is pinned under the top bar; only the hour grid scrolls. Keep this a direct child of section.cal. */}
       <div className="cal-sticky">
         <div className="page-head">
           <h2>{tr.cal.title}</h2>
-          {!me.observer && (
+          {!readOnly && (
             <button className="btn primary" onClick={() => setSheet({ kind: "new", day: view === "week" ? Math.max(today, wk) : sel, hour: firstFree() })}>
               <PlusIcon width="18" height="18" />{tr.cal.book}
             </button>
@@ -454,7 +457,7 @@ export default function Calendar({ me }) {
 
       {res ? (
         <div className="card cal-card">
-          <Grid days={days} res={res} holds={liveHolds} now={now} meId={me.id} maxHours={maxHours} readOnly={!!me.observer}
+          <Grid days={days} res={res} holds={liveHolds} now={now} meId={me.id} maxHours={maxHours} readOnly={readOnly}
             onSelect={(day, hour, hours) => setSheet({ kind: "new", day, hour, hours })}
             onRes={(r) => setSheet({ kind: "view", r })} />
         </div>

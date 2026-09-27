@@ -43,7 +43,7 @@ export default function Profile({ me, onClose, onSaved, onLogout }) {
           <input inputMode="tel" maxLength={30} value={phone} onChange={(e) => { setPhone(e.target.value); setSaved(false); }} />
         </label>
         <dl className="profile-facts">
-          <div><dt>{tr.profile.role}</dt><dd>{me.role === "admin" ? tr.profile.roleAdmin : tr.profile.roleMember}</dd></div>
+          <div><dt>{tr.profile.role}</dt><dd>{me.role === "admin" ? tr.profile.roleAdmin : me.role === "listener" ? tr.profile.roleListener : tr.profile.roleMember}</dd></div>
           <div><dt>{tr.profile.joined}</dt><dd>{monthLabel(me.joined_month)}</dd></div>
         </dl>
         {error && <p className="notice bad" role="alert">{error}</p>}

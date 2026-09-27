@@ -73,6 +73,7 @@ export default function Members({ me, onDetail }) {
             <span>{tr.members.role}</span>
             <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
               <option value="member">{tr.members.roleMember}</option>
+              <option value="listener">{tr.members.roleListener}</option>
               <option value="admin">{tr.members.roleAdmin}</option>
             </select>
           </label>
@@ -114,6 +115,7 @@ export default function Members({ me, onDetail }) {
                 {u.name}
                 {u.id === me.id && <span className="chip">{tr.members.you}</span>}
                 {u.role === "admin" && <span className="chip accent">{tr.members.admin}</span>}
+                {u.role === "listener" && <span className="chip">{tr.members.roleListener}</span>}
                 {!u.active && <span className="chip">{tr.members.inactive}</span>}
               </div>
               <div className="muted small">{tr.members.since} {u.joined_month}{u.phone ? ` · ${u.phone}` : ""}{u.email ? ` · ${u.email}` : ""}</div>
@@ -124,6 +126,7 @@ export default function Members({ me, onDetail }) {
                     <span className="muted small">{tr.members.role}</span>
                     <select className="role-select" value={u.role} onChange={(e) => changeRole(u, e.target.value)}>
                       <option value="member">{tr.members.roleMember}</option>
+                      <option value="listener">{tr.members.roleListener}</option>
                       <option value="admin">{tr.members.roleAdmin}</option>
                     </select>
                   </label>

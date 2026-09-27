@@ -37,7 +37,7 @@ export default ({ db }) => {
   r.post("/users", async (req, res) => {
     const name = String(req.body?.name ?? "").trim();
     if (!name) return res.status(400).json({ error: "İsim gerekli" });
-    const role = req.body?.role === "admin" ? "admin" : "member";
+    const role = ["admin", "listener"].includes(req.body?.role) ? req.body.role : "member";
     const phone = String(req.body?.phone ?? "").trim() || null;
     const email = req.body?.email ? normEmail(req.body.email) : null;
     if (email && !EMAIL_RE.test(email)) return res.status(400).json({ error: "Geçersiz e-posta" });
@@ -89,7 +89,7 @@ export default ({ db }) => {
 
     // Allow role change (admin can promote/demote)
     let newRole = u.role;
-    if (b.role === "admin" || b.role === "member") {
+    if (["admin", "member", "listener"].includes(b.role)) {
       if (u.id === req.user.id && b.role !== "admin") return res.status(400).json({ error: "Kendini adminlikten kaldıramazsın" });
       newRole = b.role;
     }

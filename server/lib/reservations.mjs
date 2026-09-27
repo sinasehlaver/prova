@@ -7,6 +7,8 @@ import { bootstrapId } from "./auth.mjs";
 export const HOUR = 3600_000;
 /** The bootstrap admin is an observer account (not a member): it can't book or hold a slot. */
 export const OBSERVER_NO_BOOKING = "Gözlemci yönetici hesabı rezervasyon yapamaz";
+/** A 'listener' pays the monthly fee like any member but can't book or hold a slot - it can only see the calendar. */
+export const LISTENER_NO_BOOKING = "Üye hesabı rezervasyon yapamaz";
 export const DEFAULT_MAX_HOURS = 4;
 export const MAX_PEOPLE = 20;
 
@@ -35,7 +37,7 @@ export async function listReservations(db, from, to) {
  * startMs must be whole-hour aligned and in the future; hours 1..max; people 1..MAX_PEOPLE (guests need not be members,
  * the booker pays people x per-person fee).
  */
-export function createReservation(db, { bookerId, startMs, hours, note = null, people = 1, now = Date.now() }) {
+export function createReservation(db, { bookerId, bookerRole, startMs, hours, note = null, people = 1, now = Date.now() }) {
   return serial(async () => {
     if (!Number.isSafeInteger(startMs) || startMs % HOUR !== 0) throw fail(400, "Başlangıç tam saat olmalı");
     if (!Number.isInteger(hours) || hours < 1) throw fail(400, "En az 1 saat seçmelisin");
@@ -44,6 +46,7 @@ export function createReservation(db, { bookerId, startMs, hours, note = null, p
     if (startMs <= now) throw fail(400, "Geçmiş bir saate rezervasyon yapılamaz");
     const endMs = startMs + hours * HOUR;
     if (!Number.isInteger(people) || people < 1 || people > MAX_PEOPLE) throw fail(400, `Kişi sayısı 1-${MAX_PEOPLE} olmalı`);
+    if (bookerRole === "listener") throw fail(403, LISTENER_NO_BOOKING);
     if (bookerId === (await bootstrapId(db))) throw fail(403, OBSERVER_NO_BOOKING);
     const cleanNote = String(note ?? "").trim().slice(0, 200) || null;
 

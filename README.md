@@ -123,7 +123,9 @@ turn red. The **Uyarılar** tab itself still lists every open/past alert in full
 Everything above, plus, under **Yönetim** (Admin):
 
 - **Üyeler** — approve/reject new sign-ups, see every member, regenerate a
-  lost invite link.
+  lost invite link, and set each member's role: **Aktif Üye** (can book),
+  **Yönetici** (admin), or **Üye** (pays monthly dues like any member and can
+  see the calendar, but can't book the room or hold a slot).
 - **Ödemeler** — who owes what, this month and total, across the whole
   community at a glance (the observer account created at first boot isn't a
   member: it's never billed and isn't counted here or in Ekonomi); drill into any member to waive a charge, add an
