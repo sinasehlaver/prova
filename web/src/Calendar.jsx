@@ -8,7 +8,8 @@ import { D, H, dayStart, fmtDay, fmtLong, fmtShort, fmtTime, fmtWd, hourLabel, w
 
 // ponytail: fixed 08:00-24:00 window in the UI (API accepts any whole hour). Make it a setting if a room runs earlier.
 const FROM = 8, TO = 24;
-const WEEKS = 8; // load window; the day strip and both navigations stay inside it
+const WEEKS = 8; // weeks loaded from this week on; the day strip and both navigations stay inside the window
+const PAST_WEEKS = 26; // ...plus this many weeks back (history is browsable, read-only; server caps a range at 400 days)
 const VIEW_KEY = "prova.calview";
 const POLL_MS = 12_000; // bookings + soft holds refresh
 
@@ -362,10 +363,11 @@ export default function Calendar({ me }) {
   const timer = useRef();
   const stripRef = useRef();
 
-  const from = weekStart(dayStart(Date.now()));
+  const thisWeek = weekStart(dayStart(Date.now()));
+  const from = thisWeek - PAST_WEEKS * 7 * D;
   const load = useCallback(
-    (quiet) => api("GET", `/reservations?from=${from}&to=${from + WEEKS * 7 * D}`).then((r) => { setRes(r); setLoadErr(""); }, (e) => { if (!quiet) { setLoadErr(e.message || tr.err.load); say(e.message); } }),
-    [from] // eslint-disable-line react-hooks/exhaustive-deps
+    (quiet) => api("GET", `/reservations?from=${from}&to=${thisWeek + WEEKS * 7 * D}`).then((r) => { setRes(r); setLoadErr(""); }, (e) => { if (!quiet) { setLoadErr(e.message || tr.err.load); say(e.message); } }),
+    [from, thisWeek] // eslint-disable-line react-hooks/exhaustive-deps
   );
   const loadHolds = useCallback(() => api("GET", "/holds").then(setHolds, () => {}), []);
   const say = (m) => { setToast(m); clearTimeout(timer.current); timer.current = setTimeout(() => setToast(""), 2400); };
@@ -398,17 +400,17 @@ export default function Calendar({ me }) {
     if (v === "day" && weekStart(sel) === weekStart(today)) setSel(today);
     else if (v === "day") setSel(weekStart(sel));
   };
-  const last = from + WEEKS * 7 * D - D; // last loaded day
-  const strip = Array.from({ length: Math.round((last - today) / D) + 1 }, (_, i) => today + i * D);
+  const last = thisWeek + WEEKS * 7 * D - D; // last loaded day; `from` is the first
+  const strip = Array.from({ length: Math.round((last - from) / D) + 1 }, (_, i) => from + i * D);
   const wk = weekStart(sel);
   const days = view === "week" ? Array.from({ length: 7 }, (_, i) => wk + i * D) : [sel];
   const shown = view === "week" ? wk : sel;
   const step = view === "week" ? 7 * D : D;
-  const prevOk = view === "week" ? wk > weekStart(today) : sel > today;
+  const prevOk = view === "week" ? wk > from : sel > from;
   const nextOk = view === "week" ? wk + 7 * D <= last : sel < last;
-  const go = (dir) => setSel(Math.min(last, Math.max(today, sel + dir * step)));
+  const go = (dir) => setSel(Math.min(last, Math.max(from, sel + dir * step)));
   const atToday = view === "week" ? wk === weekStart(today) : sel === today;
-  const firstFree = () => { for (let h = FROM; h < TO; h++) if (shown + h * H > now) return h; return FROM; };
+  const firstFree = () => { const d = Math.max(today, shown); for (let h = FROM; h < TO; h++) if (d + h * H > now) return h; return FROM; };
   useEffect(() => { stripRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ inline: "center", block: "nearest" }); }, [sel, view]);
 
   const readOnly = !!me.observer || me.role === "listener";
@@ -423,7 +425,7 @@ export default function Calendar({ me }) {
         <div className="page-head">
           <h2>{tr.cal.title}</h2>
           {!readOnly && (
-            <button className="btn primary" onClick={() => setSheet({ kind: "new", day: view === "week" ? Math.max(today, wk) : sel, hour: firstFree() })}>
+            <button className="btn primary" onClick={() => setSheet({ kind: "new", day: Math.max(today, view === "week" ? wk : sel), hour: firstFree() })}>
               <PlusIcon width="18" height="18" />{tr.cal.book}
             </button>
           )}
@@ -447,7 +449,7 @@ export default function Calendar({ me }) {
       {view === "day" && (
         <div className="strip" role="tablist" aria-label={tr.cal.days} ref={stripRef}>
           {strip.map((d) => (
-            <button key={d} role="tab" aria-selected={d === sel} className="strip-day" onClick={() => setSel(d)}>
+            <button key={d} role="tab" aria-selected={d === sel} className={"strip-day" + (d === today ? " today" : "")} onClick={() => setSel(d)}>
               <span>{d === today ? tr.cal.today : fmtWd(d)}</span><b className="num">{fmtDay(d)}</b>
             </button>
           ))}

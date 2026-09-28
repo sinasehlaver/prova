@@ -52,7 +52,11 @@ try {
 
   // Takvim: day strip + slot list, book via the sheet (first free future slot; tomorrow 12:00 so it is always future), see it, cancel it
   await page.waitForSelector(".strip-day");
-  await page.click(".strip-day >> nth=1");
+  // past days are browsable: strip starts before today, prev arrow is enabled, past slots are not bookable
+  if ((await page.locator(".strip-day").first().getAttribute("class")).includes("today")) fail("strip should include past days");
+  await page.click(".strip-day.today");
+  if (await page.locator(".week-nav .icon-btn").first().isDisabled()) fail("prev arrow must work from today (history)");
+  await page.click(".strip-day.today ~ .strip-day >> nth=0");
   await page.click(".slot:not([disabled]) >> nth=4"); // 12:00
   await page.waitForSelector(".sheet");
   await page.fill(".sheet input", "verify prova");
@@ -68,7 +72,7 @@ try {
   await page.screenshot({ path: `${SHOTS}/calendar-week.png` });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForSelector(".strip-day");
-  await page.click(".strip-day >> nth=1");
+  await page.click(".strip-day.today ~ .strip-day >> nth=0");
   await page.click(".res.mine");
   await page.click(".sheet .btn.danger");
   await page.click(".sheet .btn.danger");
@@ -99,7 +103,7 @@ try {
   if (made.status !== 201) fail("member booking for the gate check: " + made.status);
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForSelector(".strip-day");
-  await page.click(".strip-day >> nth=6");
+  await page.click(".strip-day.today ~ .strip-day >> nth=5");
   await page.click(".res:not(.mine)");
   await page.click(".sheet .btn.danger"); // "Yönetici olarak iptal et…" opens the gate, it does not cancel
   await page.waitForSelector(".danger-zone");
@@ -120,7 +124,7 @@ try {
   if (heldRes.status !== 200) fail("member hold: " + heldRes.status);
   await page.reload({ waitUntil: "networkidle" });
   await page.waitForSelector(".strip-day");
-  await page.click(".strip-day >> nth=3");
+  await page.click(".strip-day.today ~ .strip-day >> nth=2");
   await page.waitForSelector(".held");
   if (!(await page.textContent(".held")).includes("Rezerve ediliyor")) fail("held slot label");
   if (!(await page.textContent(".held")).includes("Ali Yılmaz seçiyor")) fail("held slot should name who is choosing");
