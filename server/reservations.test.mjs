@@ -2,7 +2,7 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { makeTestApp } from "./test-helpers.mjs";
 import { newToken } from "./lib/auth.mjs";
-import { currentMonth } from "./lib/tz.mjs";
+import { currentMonth, monthOf } from "./lib/tz.mjs";
 
 const H = 3600_000;
 const t = await makeTestApp();
@@ -65,7 +65,7 @@ test("validation: max duration, min 1h, past start, non-hour-aligned, bad people
   assert.equal((await book(t.member, day(5), 0)).status, 400);
   assert.equal((await book(t.member, day(5), 1.5)).status, 400);
   assert.equal((await book(t.member, day(5) + 30 * 60_000, 1)).status, 400);
-  assert.equal((await book(t.member, Math.floor(Date.now() / H) * H - H, 1)).status, 400); // past
+  assert.equal((await book(t.member, Math.floor(Date.now() / H) * H - 200 * 24 * H, 1)).status, 400); // past the back-fill limit
   for (const people of [0, -1, 2.5, 21, "3"]) assert.equal((await book(t.member, day(5), 1, { people })).status, 400, `people=${people}`);
   assert.equal((await book(t.member, undefined, 1)).status, 400);
 });
@@ -150,6 +150,79 @@ test("cannot cancel a started reservation", async () => {
     sql: "INSERT INTO reservations (booker_id, start_ms, end_ms) VALUES (?,?,?)", args: [t.member.id, s, s + 2 * H],
   });
   assert.equal((await t.fetch(`/api/reservations/${lastInsertRowid}`, { method: "DELETE", as: t.member })).status, 409);
+});
+
+test("past reservations: admin may cancel (gated, audited, unpaid charge voided); members may not", async () => {
+  const s = Math.floor(Date.now() / H) * H - 3 * H;
+  const mk = async (booker) => {
+    const { lastInsertRowid: id } = await t.db.execute({
+      sql: "INSERT INTO reservations (booker_id, start_ms, end_ms) VALUES (?,?,?)", args: [booker.id, s, s + H],
+    });
+    return Number(id);
+  };
+  const del = (id, as, body) => t.fetch(`/api/reservations/${id}`, { method: "DELETE", as, body });
+  const id = await mk(t.member);
+  await t.db.execute({ sql: "INSERT INTO charges (user_id, month, kind, amount_try, reservation_id) VALUES (?,?, 'booking', 100, ?)", args: [t.member.id, currentMonth(), id] });
+  const first = t.member.name.split(" ")[0];
+  const ok = { confirm: first, reason: "geçmiş kayıt hatalı" };
+  // member: own past -> 409, others' past -> 403
+  assert.equal((await del(id, t.member)).status, 409);
+  assert.equal((await del(id, t.member2, ok)).status, 403);
+  // admin: validation gate still applies
+  assert.equal((await del(id, t.admin)).status, 400);
+  assert.equal((await del(id, t.admin, { confirm: first, reason: "yok" })).status, 400);
+  assert.equal(await cancelledAt(id), null);
+  // admin passes the gate
+  assert.equal((await del(id, t.admin, ok)).status, 200);
+  assert.ok((await cancelledAt(id)) > 0);
+  const [a] = await audit(id);
+  assert.equal(a.action, "admin_cancel");
+  assert.equal(a.actor_id, t.admin.id);
+  assert.equal(a.reason, "geçmiş kayıt hatalı");
+  const ch = (await t.db.execute({ sql: "SELECT voided_at FROM charges WHERE reservation_id = ?", args: [id] })).rows[0];
+  assert.ok(ch.voided_at > 0);
+  // paid charge stays when the past booking is cancelled
+  const id2 = await mk(t.member);
+  const rc = (await t.db.execute({ sql: "INSERT INTO receipts (user_id, month, sha256, status, uploaded_at) VALUES (?,?,?, 'ok', 1)", args: [t.member.id, currentMonth(), `past-${id2}`] }));
+  await t.db.execute({ sql: "INSERT INTO charges (user_id, month, kind, amount_try, reservation_id, paid_receipt_id, paid_by) VALUES (?,?, 'booking', 100, ?, ?, 'admin')", args: [t.member.id, currentMonth(), id2, Number(rc.lastInsertRowid)] });
+  assert.equal((await del(id2, t.admin, ok)).status, 200);
+  assert.equal((await t.db.execute({ sql: "SELECT voided_at FROM charges WHERE reservation_id = ?", args: [id2] })).rows[0].voided_at, null);
+});
+
+test("back-filling past hours: booked + charged in that month, overlap/limit enforced, no joined_month limit, only admin cancels", async () => {
+  const D = 24 * H;
+  const mkOld = async (name) => { // joined long ago, so past months are theirs
+    const { lastInsertRowid } = await t.db.execute({
+      sql: "INSERT INTO users (name, role, invite_token, joined_month, created_at) VALUES (?, 'member', ?, '2000-01', ?)",
+      args: [name, newToken(), Date.now()],
+    });
+    return (await t.db.execute({ sql: "SELECT * FROM users WHERE id = ?", args: [lastInsertRowid] })).rows[0];
+  };
+  const u = await mkOld("Geçmiş Deneme"), u2 = await mkOld("Eski Üye");
+  const cfg = await (await t.fetch("/api/reservations/config", { as: u })).json();
+  assert.equal(cfg.max_past_days, 190);
+
+  const s = Math.floor(Date.now() / H) * H - 60 * D; // a whole hour two months back
+  assert.equal((await t.fetch("/api/holds", { method: "POST", as: u, body: { start_ms: s, hours: 2 } })).status, 200); // sheet's hold works in the past
+  const r = await book(u, s, 2, { people: 2 });
+  assert.equal(r.status, 201);
+  const c = await r.json();
+  assert.equal(c.booker_id, u.id);
+  const ch = (await t.db.execute({ sql: "SELECT month, amount_try FROM charges WHERE reservation_id = ?", args: [c.id] })).rows;
+  assert.equal(ch.length, 1);
+  assert.equal(ch[0].month, monthOf(s)); // charge lands in the reservation's (past) month
+
+  assert.equal((await book(u2, s + H, 1)).status, 409); // overlap still checked in the past
+  assert.equal((await book(u, s - 191 * D, 1)).status, 400); // beyond MAX_PAST_DAYS
+  assert.equal((await t.fetch("/api/holds", { method: "POST", as: u, body: { start_ms: s - 191 * D, hours: 1 } })).status, 400);
+  assert.equal((await book(u, s + 30 * 60_000, 1)).status, 400); // still whole-hour aligned
+
+  // before the booker's joined_month is fine now (existing members are back-filled)
+  await t.db.execute({ sql: "UPDATE users SET joined_month = ? WHERE id = ?", args: [currentMonth(), u.id] });
+  assert.equal((await book(u, s + 3 * H, 1)).status, 201);
+
+  // the booker can't undo a past booking themselves; an admin can (gated)
+  assert.equal((await t.fetch(`/api/reservations/${c.id}`, { method: "DELETE", as: u })).status, 409);
 });
 
 test("'listener' role: can't book or hold, but sees reservations and appears in /members", async () => {

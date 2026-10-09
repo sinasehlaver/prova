@@ -2,7 +2,7 @@
 // marked HOOK points, inside the same write transaction, so booking + charges commit or roll back together.
 import { serial } from "./serial.mjs";
 import { addBookingCharges, voidBookingCharges } from "./billing.mjs";
-import { dropHoldRaw, foreignHoldRaw } from "./holds.mjs";
+import { MAX_PAST_DAYS, dropHoldRaw, foreignHoldRaw, pastLimit } from "./holds.mjs";
 import { bootstrapId } from "./auth.mjs";
 export const HOUR = 3600_000;
 /** The bootstrap admin is an observer account (not a member): it can't book or hold a slot. */
@@ -34,7 +34,8 @@ export async function listReservations(db, from, to) {
 
 /**
  * Create a booking. Throws Error with .status (400 validation, 403 bootstrap/observer admin, 409 overlap).
- * startMs must be whole-hour aligned and in the future; hours 1..max; people 1..MAX_PEOPLE (guests need not be members,
+ * startMs must be whole-hour aligned; past starts are allowed (back-filling) up to MAX_PAST_DAYS (also before the
+ * booker's joined_month: existing members are back-filled; billing browse then reaches that month, see browseFrom); hours 1..max; people 1..MAX_PEOPLE (guests need not be members,
  * the booker pays people x per-person fee).
  */
 export function createReservation(db, { bookerId, bookerRole, startMs, hours, note = null, people = 1, now = Date.now() }) {
@@ -43,7 +44,7 @@ export function createReservation(db, { bookerId, bookerRole, startMs, hours, no
     if (!Number.isInteger(hours) || hours < 1) throw fail(400, "En az 1 saat seçmelisin");
     const max = await maxHours(db);
     if (hours > max) throw fail(400, `En fazla ${max} saat rezerve edilebilir`);
-    if (startMs <= now) throw fail(400, "Geçmiş bir saate rezervasyon yapılamaz");
+    if (startMs < pastLimit(now)) throw fail(400, `En fazla ${MAX_PAST_DAYS} gün geriye rezervasyon eklenebilir`);
     const endMs = startMs + hours * HOUR;
     if (!Number.isInteger(people) || people < 1 || people > MAX_PEOPLE) throw fail(400, `Kişi sayısı 1-${MAX_PEOPLE} olmalı`);
     if (bookerRole === "listener") throw fail(403, LISTENER_NO_BOOKING);
@@ -85,7 +86,7 @@ export const firstName = (name) =>
   String(name ?? "").trim().split(/\s+/)[0].toLocaleLowerCase("tr").replace(/ı/g, "i").normalize("NFD").replace(/[̀-ͯ]/g, "");
 
 /**
- * Cancel until start. The booker cancels their own booking with no extra ceremony. An admin cancelling ANOTHER member's
+ * Cancel until start (admins may also cancel started/past ones; unpaid charges are voided, paid stay). The booker cancels their own booking with no extra ceremony. An admin cancelling ANOTHER member's
  * booking passes a hard gate: `confirm` must equal the booker's first name (case-insensitive) and `reason` must be
  * >= MIN_REASON chars; both are checked here (not only in the UI), and the acting admin + reason are written to
  * `reservation_audit` in the same tx. Throws with .status (404/403/409, 400 when the gate is not passed).
@@ -100,7 +101,7 @@ export function cancelReservation(db, id, user, { reason, confirm, now = Date.no
       if (!r || r.cancelled_at) throw fail(404, "Rezervasyon bulunamadı");
       const own = r.booker_id === user.id;
       if (!own && user.role !== "admin") throw fail(403, "Bu rezervasyonu sadece oluşturan iptal edebilir");
-      if (r.start_ms <= now) throw fail(409, "Başlamış rezervasyon iptal edilemez");
+      if (r.start_ms <= now && user.role !== "admin") throw fail(409, "Başlamış rezervasyon iptal edilemez"); // admins may also clear past ones
       let why = null;
       if (!own) { // hard gate: an admin acting on someone else's booking
         why = String(reason ?? "").trim();

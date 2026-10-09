@@ -3,7 +3,7 @@ import { api, apiUpload } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon } from "./icons.jsx";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
-import { CheckG, CreditCard, CreditCover, DashG, ItemList, KalanCard, MonthNav, PaySummary, StatusPill, UploadG, chargeName, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
+import { CheckG, CreditCard, CreditCover, DashG, DebtCard, ItemList, KalanCard, MonthNav, PaySummary, StatusPill, UploadG, chargeName, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
 
 const A = tr.admin;
 const fmtDateTimeShort = (ms) => new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Europe/Istanbul" }).format(ms);
@@ -426,6 +426,7 @@ export function UserDetail({ user, onBack }) {
         <>
           <MonthNav month={data.month} months={data.months} onChange={load} />
           <KalanCard data={data} />
+          <DebtCard data={data} onPick={load} admin />
           <CreditCover cover={data.credit_cover} admin />
           {data.credit.balance_try > 0 && (
             <CreditCard credit={data.credit} admin>

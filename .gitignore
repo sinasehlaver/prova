@@ -8,3 +8,15 @@ web/dist
 
 # real bank receipts (personal data) — never commit; synthetic ones live in fixtures/receipts/
 /receipts/
+
+# DB backups / dumps / scratch (contain real invite tokens + member data)
+*.db.bak*
+*.sqlite
+*.sqlite3
+*.bak
+*.log
+*.pem
+*.key
+.vite/
+coverage/
+verify-shots/

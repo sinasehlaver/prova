@@ -2,7 +2,7 @@
 // Admin billing endpoints live in billing-admin.mjs and are mounted from here (keeps ROUTES to one line).
 import express, { Router } from "express";
 import { requireAuth } from "../lib/auth.mjs";
-import { browsableMonths, canBrowse, ensureMonth, fail, isMonth, monthView, openElsewhere, projectedSub } from "../lib/billing.mjs";
+import { browsableMonths, canBrowse, ensureMonth, fail, isMonth, monthView, openElsewhere, projectedSub, userDebt } from "../lib/billing.mjs";
 import { creditOutlook, creditPayload } from "../lib/credits.mjs";
 import { getSettings, listReceipts, MAX_PDF, submitReceipt } from "../lib/payments.mjs";
 import { currentMonth } from "../lib/tz.mjs";
@@ -20,23 +20,24 @@ export const guard = (fn) => async (req, res, next) => {
 export async function billingPayload(db, user, month) {
   const future = month > currentMonth();
   if (!future) await ensureMonth(db, user, month);
-  const [view, receipts, cfg, credit, planned, other_open] = await Promise.all([
+  const [view, receipts, cfg, credit, planned, other_open, debt] = await Promise.all([
     monthView(db, user.id, month), listReceipts(db, { userId: user.id, month }), getSettings(db), creditPayload(db, user.id),
-    projectedSub(db, user, month), openElsewhere(db, user, month),
+    projectedSub(db, user, month), openElsewhere(db, user, month), userDebt(db, user.id),
   ]);
   const projected_try = planned?.amount_try ?? 0;
   const credit_cover = await creditOutlook(db, user, month, view.kalan + projected_try, credit.balance_try);
   return {
     ...view, items: planned ? [planned, ...view.items] : view.items, projected_try, future, other_open,
-    months: browsableMonths(user), receipts, pay_to: { iban: cfg.iban, holder: cfg.holder },
+    months: await browsableMonths(db, user), receipts, pay_to: { iban: cfg.iban, holder: cfg.holder },
+    ...debt, // debt_try + debt_months = cumulative unpaid over all months <= current (unpaid stays in its own month)
     credit, credit_cover, // credit = what the community owes the member (all months)
   };
 }
 
-export const pickMonth = (q, user) => {
+export const pickMonth = async (db, q, user) => {
   const month = q ?? currentMonth();
   if (!isMonth(month)) throw fail(400, "Geçersiz ay");
-  if (!canBrowse(user, month)) throw fail(400, "Bu ay görüntülenemez");
+  if (!(await canBrowse(db, user, month))) throw fail(400, "Bu ay görüntülenemez");
   return month;
 };
 
@@ -51,7 +52,7 @@ export default ({ db }) => {
   const r = Router();
 
   r.get("/billing", requireAuth, guard(async (req, res) => {
-    res.json(await billingPayload(db, req.user, pickMonth(req.query.month, req.user)));
+    res.json(await billingPayload(db, req.user, await pickMonth(db, req.query.month, req.user)));
   }));
 
   // Member self-serve upload (re-enabled 2026-09-22, admin-approval-only): a raw PDF body, no amount, no charge

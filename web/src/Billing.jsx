@@ -94,6 +94,33 @@ export function KalanCard({ data }) {
 }
 
 /**
+ * Cumulative unpaid over all months up to today (payload debt_try / debt_months), per month; tapping a month opens it.
+ * Hidden unless some of the debt sits in a month other than the one being viewed (otherwise KalanCard says it all).
+ */
+export function DebtCard({ data, onPick, admin = false }) {
+  const rows = data.debt_months ?? [];
+  if (!(data.debt_try > 0) || !rows.some((m) => m.month !== data.month)) return null;
+  const D = tr.billing.debt;
+  const title = admin ? D.titleAdmin : D.title;
+  return (
+    <section className="card debt" aria-label={title}>
+      <div className="debt-label">{title}</div>
+      <div className="debt-amount amount">{fmtTRY(data.debt_try)}</div>
+      <p className="hint">{admin ? D.hintAdmin : D.hint}</p>
+      <ul className="debt-list">
+        {rows.map((m) => (
+          <li key={m.month}>
+            <button type="button" className={"debt-row" + (m.month === data.month ? " cur" : "")} onClick={() => onPick(m.month)} aria-label={`${D.open} ${monthLabel(m.month)}`}>
+              <span>{monthLabel(m.month)}</span><span className="amount">{fmtTRY(m.remaining_try)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
  * DISPLAY-ONLY: how much of this (current or future) month the member's existing credit would cover, after what it
  * would first go to (older debt, earlier months' planned rent). Server-computed (creditOutlook); nothing is applied -
  * an admin still settles it by hand ("Alacaktan öde"). Renders nothing when there's no credit or nothing to cover.
@@ -262,6 +289,7 @@ export default function Billing() {
       <div className="page-head"><h2>{tr.billing.title}</h2></div>
       <MonthNav month={data.month} months={data.months} onChange={load} />
       <KalanCard data={data} />
+      <DebtCard data={data} onPick={load} />
       <CreditCover cover={data.credit_cover} />
       <CreditCard credit={data.credit} />
       <PayTo pay_to={data.pay_to} onCopied={() => say(tr.billing.copied)} />

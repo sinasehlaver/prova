@@ -29,7 +29,9 @@ export default ({ db }) => {
     // Bootstrap admin excluded here too - outstandingOverview hides it, so there's no point ensuring its charge.
     const users = (await db.execute(`SELECT * FROM users WHERE active = 1 AND id <> ${BOOTSTRAP_ID_SQL}`)).rows;
     if (month === currentMonth()) for (const u of users) await ensureMonth(db, u, month);
-    const joined = users.reduce((a, u) => (a && a < u.joined_month ? a : u.joined_month), null) ?? currentMonth();
+    const first = (await db.execute(`SELECT MIN(month) AS m FROM charges WHERE voided_at IS NULL AND user_id <> ${BOOTSTRAP_ID_SQL}`)).rows[0]?.m;
+    let joined = users.reduce((a, u) => (a && a < u.joined_month ? a : u.joined_month), null) ?? currentMonth();
+    if (first && first < joined) joined = first;
     res.json({ ...(await outstandingOverview(db, month)), months: monthRange(joined < month ? joined : month, maxMonth()) });
   }));
 
@@ -58,7 +60,7 @@ export default ({ db }) => {
   r.get("/admin/users/:id/billing", guard(async (req, res) => {
     const u = await userOf(req.params.id, req);
     const month = req.query.month ?? currentMonth();
-    if (!canBrowse(u, month)) throw fail(400, "Geçersiz ay");
+    if (!(await canBrowse(db, u, month))) throw fail(400, "Geçersiz ay");
     res.json(await billingPayload(db, u, month));
   }));
   r.get("/admin/users/:id/receipts", guard(async (req, res) => {
@@ -85,7 +87,7 @@ export default ({ db }) => {
   r.post("/admin/users/:id/receipts", rawPdf, guard(async (req, res) => {
     const u = await userOf(req.params.id, req);
     const month = req.query.month ?? currentMonth();
-    if (!canBrowse(u, month)) throw fail(400, "Geçersiz ay");
+    if (!(await canBrowse(db, u, month))) throw fail(400, "Geçersiz ay");
     const chargeIds = req.query.charges === undefined ? null : parseTokens(req.query.charges);
     const { id, duplicate } = await recordPayment(db, u, {
       month, chargeIds, paidTry: Number(req.query.amount_try), buffer: bodyBuf(req),

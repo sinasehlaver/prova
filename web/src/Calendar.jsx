@@ -9,7 +9,7 @@ import { D, H, dayStart, fmtDay, fmtLong, fmtShort, fmtTime, fmtWd, hourLabel, w
 // ponytail: fixed 08:00-24:00 window in the UI (API accepts any whole hour). Make it a setting if a room runs earlier.
 const FROM = 8, TO = 24;
 const WEEKS = 8; // weeks loaded from this week on; the day strip and both navigations stay inside the window
-const PAST_WEEKS = 26; // ...plus this many weeks back (history is browsable, read-only; server caps a range at 400 days)
+const PAST_WEEKS = 26; // ...plus this many weeks back (past hours are bookable too: back-filling; server allows MAX_PAST_DAYS=190, caps a range at 400 days)
 const VIEW_KEY = "prova.calview";
 const POLL_MS = 12_000; // bookings + soft holds refresh
 
@@ -25,9 +25,8 @@ const useWide = () => {
 };
 
 // Shared by Grid (drag span clamping) and NewSheet (start-hour options): true if the whole hour [h, h+1) on day d is
-// bookable (not past, not covered by a live reservation or someone else's soft hold).
-const isFreeHour = (res, holds, now, d, h) => d + h * H > now
-  && !res.some((r) => r.start_ms < d + (h + 1) * H && r.end_ms > d + h * H)
+// bookable (not covered by a live reservation or someone else's soft hold). Past hours count: they can be back-filled.
+const isFreeHour = (res, holds, now, d, h) => !res.some((r) => r.start_ms < d + (h + 1) * H && r.end_ms > d + h * H)
   && !holds.some((k) => k.start_ms < d + (h + 1) * H && k.end_ms > d + h * H);
 
 // Touch: a short hold-and-still arms drag mode (so a plain vertical swipe still scrolls the page); mouse arms instantly.
@@ -159,11 +158,11 @@ function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes, readOnly
         continue;
       }
       cells.push(
-        <button key={`f${d}-${h}`} className={"slot" + (inDrag ? " dragging" : "")} style={{ gridColumn: col, gridRow: row }} disabled={past}
+        <button key={`f${d}-${h}`} className={"slot" + (past ? " past" : "") + (inDrag ? " dragging" : "")} style={{ gridColumn: col, gridRow: row }}
           data-day={d} data-hour={h}
           onPointerDown={(e) => onDown(e, d, h)} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}
           onClick={() => onClickSlot(d, h)} aria-label={`${fmtLong(d)} ${hourLabel(h)} ${past ? tr.cal.pastSlot : tr.cal.free}`}>
-          {!past && <span className="slot-label">{multi ? <PlusIcon width="16" height="16" /> : tr.cal.free}</span>}
+          <span className="slot-label">{multi ? <PlusIcon width="16" height="16" /> : tr.cal.free}</span>
         </button>
       );
     }
@@ -179,13 +178,14 @@ function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes, readOnly
 }
 
 // Week-view weekday/date header row: lives in the sticky block (Calendar), columns mirror Grid's.
-function DayHeads({ days, now }) {
+function DayHeads({ days, now, onPick }) {
   return (
     <div className="cal-grid cal-heads" style={{ "--cols": days.length }}>
       {days.map((d, i) => (
-        <div key={d} className={"cal-head" + (dayStart(now) === d ? " today" : "")} style={{ gridColumn: i + 2 }}>
+        <button key={d} type="button" className={"cal-head" + (dayStart(now) === d ? " today" : "")} style={{ gridColumn: i + 2 }}
+          onClick={() => onPick(d)} aria-label={fmtLong(d)}>
           <span>{fmtWd(d)}</span><b className="num">{fmtDay(d)}</b>
-        </div>
+        </button>
       ))}
     </div>
   );
@@ -272,6 +272,7 @@ function NewSheet({ day, hour, hours: initialHours, res, holds, now, maxHours, m
             </div>
             <span className="muted small">{tr.cal.peopleHint}</span>
           </div>
+          {day + start * H <= now && <p className="notice info">{tr.cal.pastNote}</p>}
           {(err || holdErr) && <p className="notice bad" role="alert">{err || holdErr}</p>}
           <div className="row end">
             <button type="button" className="btn ghost" onClick={onClose}>{tr.cal.cancel}</button>
@@ -295,7 +296,8 @@ function ViewSheet({ r, now, me, onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const own = r.booker_id === me.id;
-  const can = r.start_ms > now && (own || me.role === "admin");
+  const past = r.start_ms <= now;
+  const can = me.role === "admin" || (!past && own);
   const first = r.booker_name.trim().split(/\s+/)[0];
   const armed = fold(typed) === fold(r.booker_name) && reason.trim().length >= MIN_REASON;
   const cancel = async () => {
@@ -315,7 +317,7 @@ function ViewSheet({ r, now, me, onClose, onDone }) {
       {can && !own && danger && (
         <form className="danger-zone" role="alertdialog" aria-labelledby="dz-title" onSubmit={(e) => { e.preventDefault(); if (armed && !busy) cancel(); }}>
           <h3 id="dz-title">{tr.cal.dangerTitle}</h3>
-          <p>{tr.cal.dangerBody(r.booker_name)}</p>
+          <p>{past ? tr.cal.dangerBodyPast(r.booker_name) : tr.cal.dangerBody(r.booker_name)}</p>
           <p className="danger-what num"><b>{r.booker_name}</b> · {fmtLong(r.start_ms)}, {tr.cal.range(fmtTime(r.start_ms), fmtTime(r.end_ms))}</p>
           <label className="field">
             <span>{tr.cal.dangerConfirm(first)}</span>
@@ -445,7 +447,7 @@ export default function Calendar({ me }) {
           </div>
           <button className="icon-btn" onClick={() => go(1)} disabled={!nextOk} aria-label={view === "week" ? tr.cal.weekNext : tr.cal.dayNext}><ChevronRightIcon /></button>
         </div>
-        {view === "week" && <DayHeads days={days} now={now} />}
+        {view === "week" && <DayHeads days={days} now={now} onPick={(d) => { setPref("day"); setSel(d); }} />}
       {view === "day" && (
         <div className="strip" role="tablist" aria-label={tr.cal.days} ref={stripRef}>
           {strip.map((d) => (

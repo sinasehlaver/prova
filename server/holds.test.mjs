@@ -91,9 +91,9 @@ test("one hold per user: a new hold replaces the old; refresh extends; release f
   assert.equal((await release(t.member)).status, 200, "release without a hold is a no-op");
 });
 
-test("hold validation: hour-aligned, future, 1..max hours", async () => {
+test("hold validation: hour-aligned, not beyond the back-fill limit, 1..max hours", async () => {
   const s = day(5);
-  for (const body of [{}, { start_ms: s + 1800_000, hours: 1 }, { start_ms: s, hours: 0 }, { start_ms: s, hours: 5 }, { start_ms: s, hours: 1.5 }, { start_ms: Math.floor(Date.now() / H) * H - H, hours: 1 }]) {
+  for (const body of [{}, { start_ms: s + 1800_000, hours: 1 }, { start_ms: s, hours: 0 }, { start_ms: s, hours: 5 }, { start_ms: s, hours: 1.5 }, { start_ms: Math.floor(Date.now() / H) * H - 200 * 24 * H, hours: 1 }]) {
     assert.equal((await t.fetch("/api/holds", { method: "POST", as: t.member, body })).status, 400, JSON.stringify(body));
   }
 });

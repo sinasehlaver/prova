@@ -1,5 +1,7 @@
 # Yüzen Oda
 
+A Turkish phone-first web app for a community sharing one rehearsal room: bookings, rent splitting and supply alerts.
+
 A phone-first web app for a community that shares one rehearsal room. It handles
 booking the room, splitting the monthly rent + per-booking fees fairly between
 members, verifying bank transfer receipts, and raising "we're out of X" alerts —
@@ -15,23 +17,36 @@ nothing here is Mac-specific except the browser-driven `npm run verify` check
 (see [Testing](#testing)).
 
 ```sh
-npm install
 ./start.sh
 ```
 
-`./start.sh` is the recommended one-command way to run both the API and the
-web app together — it starts the API on `:4600` and the web app on `:4601`,
-and Ctrl+C cleanly stops both (and their child processes, e.g. vite's esbuild
-service) with nothing left running or listening. macOS/Linux only (it's a bash
-script using `trap`); on Windows, or if you'd rather run/stop each process by
-hand, use the equivalent two-command form instead:
+That one command gets the app ready to try in the browser:
+
+1. runs `npm install` if `node_modules` is missing or out of date
+2. stops any earlier run of the app that's still holding `:4600`/`:4601` (if
+   another program is using those ports, it tells you and stops instead)
+3. prepares a local **dev database** (`dev.db`, gitignored). It's filled with demo
+   members and has one test user for each role. Your `prova.db` is never touched
+4. starts the API on `:4600` (local machine only) and the web app on `:4601`,
+   then waits until both respond
+5. prints a login link for each role (admin, Aktif Üye, Üye, observer admin) and
+   opens **Chrome** logged in as the admin who can book
+
+Open another printed link to switch user (a browser holds one login at a time).
+`./start.sh --fresh` wipes the dev DB and starts from clean demo data.
+`--no-open` skips opening Chrome. Ctrl+C stops both processes, along with their
+child processes such as vite's esbuild service, and leaves nothing listening.
+
+macOS/Linux only (bash; opening Chrome uses macOS `open`, with `xdg-open` as the
+Linux fallback). On Windows, or to run the two processes by hand against
+`prova.db`, use:
 
 ```sh
 npm install
 npm run dev
 ```
 
-Either way this starts the API on `:4600` and the web app on `:4601`. Open
+This starts the API on `:4600` and the web app on `:4601`. Open
 **http://localhost:4601**.
 
 On the very first run, with an empty database, the server creates an admin
@@ -77,15 +92,22 @@ invite link from your member page.
 
 Go to the **Takvim** (Calendar) tab.
 
-- Switch between a **Gün** (day) view and a **Hafta** (week) view.
+- Switch between a **Gün** (day) view and a **Hafta** (week) view. In week view,
+  tap a date to jump to that day.
 - Tap a free slot to book it, or drag across several hours. Pick how many
   people are coming — the cost is per-person, and guests don't need to be
   members.
+- You can also book a **past** hour (e.g. a rehearsal that happened but was
+  never booked), up to 190 days back.
+  Past hours look dimmer; the sheet warns that the cost goes onto that
+  month's bill and that only an admin can cancel it afterwards.
 - While you have the booking sheet open, that time slot is held for ~2 minutes
   so nobody else can grab it out from under you.
 - To cancel your own booking, open it and confirm. Admins can cancel *other*
   members' bookings too, but only after typing the booker's name and a reason
-  — that gets logged.
+  — that gets logged. Only admins can also cancel **past** (already started)
+  bookings, with the same name + reason check; unpaid charges are voided, paid
+  ones stay.
 
 ### Paying your dues
 

@@ -221,6 +221,7 @@ button.link:active { transform: scale(0.98); }
 .login-card h1 { font-size: var(--fs-5); margin: var(--s-4) 0 var(--s-3); }
 .logo { width: 3.5rem; height: 3.5rem; margin: 0 auto; border-radius: var(--r-lg); display: grid; place-items: center; font: 700 var(--fs-5) var(--font-display); background: var(--accent); color: var(--accent-ink); box-shadow: var(--shadow-md); }
 .notice { padding: var(--s-3); border-radius: var(--r-md); font-size: var(--fs-2); text-align: left; }
+.notice.info { background: var(--surface2); color: var(--muted); border: 1px solid var(--line); }
 .notice.bad { background: var(--bad-tint); color: var(--bad); border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent); }
 
 /* Toast */
@@ -292,6 +293,9 @@ button.link:active { transform: scale(0.98); }
 .cal-hour { align-self: start; padding-top: var(--s-2); font-size: var(--fs-1); color: var(--muted); text-align: right; padding-right: var(--s-2); }
 .cal-head { display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: var(--fs-1); color: var(--muted); font-weight: 600; text-transform: capitalize; border-radius: var(--r-sm); }
 .cal-head b { font: 700 var(--fs-3) var(--font-display); color: var(--text); }
+button.cal-head { min-height: 0; padding: 0; border: 0; background: transparent; cursor: pointer; transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease), transform 120ms var(--ease); }
+button.cal-head:hover { background: var(--surface2); color: var(--text); }
+button.cal-head:active { transform: scale(0.96); }
 .cal-head.today { background: var(--accent-tint); color: var(--accent); }
 .cal-head.today b { color: var(--accent); }
 .slot {
@@ -311,6 +315,8 @@ button.link:active { transform: scale(0.98); }
 .slot.ro, .slot.ro:hover { background: transparent; border: 1px dashed var(--line); color: var(--muted); transform: none; cursor: default; }
 .slot.ro:hover .slot-label { opacity: 0.75; }
 .observer-note { margin: 0 0 var(--s-3); background: var(--surface2); color: var(--muted); border: 1px solid var(--line); }
+/* past hours stay bookable (back-filling) but read as history: dimmer until hovered */
+.slot.past:not(:hover):not(:focus-visible):not(.dragging) { background: color-mix(in srgb, var(--surface2) 55%, transparent); opacity: 0.7; }
 .slot:disabled { border-style: solid; border-color: transparent; background: color-mix(in srgb, var(--surface2) 55%, transparent); cursor: default; opacity: 0.6; }
 .res {
   position: relative; display: flex; flex-direction: column; justify-content: center; gap: 2px; min-width: 0;

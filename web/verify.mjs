@@ -52,10 +52,19 @@ try {
 
   // Takvim: day strip + slot list, book via the sheet (first free future slot; tomorrow 12:00 so it is always future), see it, cancel it
   await page.waitForSelector(".strip-day");
-  // past days are browsable: strip starts before today, prev arrow is enabled, past slots are not bookable
+  // past days are browsable: strip starts before today, prev arrow is enabled
   if ((await page.locator(".strip-day").first().getAttribute("class")).includes("today")) fail("strip should include past days");
   await page.click(".strip-day.today");
   if (await page.locator(".week-nav .icon-btn").first().isDisabled()) fail("prev arrow must work from today (history)");
+  // past hours are bookable (back-filling): first strip day's slots are enabled .past buttons, the sheet warns
+  await page.locator(".strip-day").first().click();
+  await page.waitForSelector("button.slot.past");
+  if (await page.locator("button.slot.past").first().isDisabled()) fail("past slots must be bookable");
+  await page.locator("button.slot.past").first().click();
+  await page.waitForSelector(".sheet .notice.info");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".sheet"));
+  await page.click(".strip-day.today");
   await page.click(".strip-day.today ~ .strip-day >> nth=0");
   await page.click(".slot:not([disabled]) >> nth=4"); // 12:00
   await page.waitForSelector(".sheet");
@@ -83,6 +92,13 @@ try {
   await page.waitForSelector(".cal-week");
   if ((await page.evaluate(() => localStorage.getItem("prova.calview"))) !== "week") fail("calendar view choice not remembered");
   if ((await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) > 1) fail("week view overflows at 390px");
+  // Hafta: clicking a date head drills into Gün on that day (session only, not saved)
+  await page.click(".cal-heads .cal-head >> nth=2");
+  await page.waitForSelector(".cal-day");
+  if (!(await page.locator('.view-toggle [role=radio][aria-checked=true]').innerText()).includes("Gün")) fail("week head click did not switch to Gün");
+  if ((await page.evaluate(() => localStorage.getItem("prova.calview"))) !== "week") fail("week head click must not change the saved view");
+  await page.click('.view-toggle [role=radio]:has-text("Hafta")');
+  await page.waitForSelector(".cal-week");
   await page.click('.view-toggle [role=radio]:has-text("Gün")');
   await page.waitForSelector(".cal-day");
   await page.evaluate(() => localStorage.removeItem("prova.calview"));

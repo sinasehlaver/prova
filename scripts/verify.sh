@@ -4,6 +4,7 @@
 # Screenshots: PROVA_SHOTS=<dir> npm run verify  (default: a temp dir that is deleted on exit)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+unset FORCE_COLOR # a colour-forcing parent shell makes node -e console.log(4) print escape codes and every [ "$x" = 4 ] check fail
 
 npm test --silent
 npm run build --silent

@@ -656,3 +656,71 @@ test("'listener' role is billed exactly like a normal member (subscription charg
 
   assert.equal((await t.fetch("/api/reservations", { method: "POST", as: listener, body: { start_ms: day(20), hours: 1 } })).status, 403);
 });
+
+test("cumulative debt: unpaid months add up in the payload; part-payment reduces; waived/voided/future excluded; bootstrap 0", async () => {
+  const u = await mk("Birikim Deniz");
+  const add = (month, amount_try, note) => admin(`/users/${u.id}/charges`, { method: "POST", body: { month, amount_try, note } });
+  const y = (n) => `${+M.slice(0, 4) - n}-${M.slice(5)}`;
+  const b0 = await bill(u);
+  assert.equal(b0.debt_try, b0.kalan); // only the current month owes
+  assert.deepEqual(b0.debt_months.map((m) => m.month), [M]);
+
+  await add(y(1), 300, "Eski 1");
+  await add(y(2), 200, "Eski 2");
+  let b = await bill(u);
+  assert.equal(b.debt_try, b0.kalan + 500);
+  assert.deepEqual(b.debt_months.map((m) => m.month), [y(2), y(1), M]); // oldest first
+  assert.equal((await bill(u, NEXT)).debt_try, b.debt_try); // same total whichever month is viewed
+  assert.equal(b.kalan, b0.kalan); // the month's own kalan is unchanged
+
+  // part-payment on the old month reduces the total by exactly what was applied
+  const byNote = async (note) => (await t.db.execute({ sql: "SELECT id FROM charges WHERE user_id = ? AND note = ?", args: [u.id, note] })).rows[0]; // y(n) < joined_month: not browsable
+  const old = await byNote("Eski 1");
+  assert.equal((await record(u, { charges: [old.id], amount: 100 })).status, 201); // filed under this month, applied to the old charge
+  assert.equal((await bill(u)).debt_try, b0.kalan + 400);
+
+  // waived and voided charges are not owed
+  const old2 = await byNote("Eski 2");
+  await admin(`/charges/${old2.id}/waive`, { method: "POST", body: { waived: true } });
+  assert.equal((await bill(u)).debt_try, b0.kalan + 200);
+  await t.db.execute({ sql: "UPDATE charges SET voided_at = ? WHERE id = ?", args: [Date.now(), old.id] });
+  assert.equal((await bill(u)).debt_try, b0.kalan);
+
+  // a FUTURE month's charge never counts toward debt
+  await add(NEXT, 700, "Gelecek");
+  b = await bill(u);
+  assert.equal(b.debt_try, b0.kalan);
+  assert.ok(!b.debt_months.some((m) => m.month > M));
+  assert.equal((await bill(u, NEXT)).debt_try, b0.kalan);
+
+  // the admin per-user view carries the same figure; the bootstrap observer owes nothing
+  assert.equal((await J(await admin(`/users/${u.id}/billing`))).debt_try, b0.kalan);
+  assert.equal((await bill(t.boot)).debt_try, 0);
+});
+
+test("back-filled booking before joined_month: month browsable + payable, booking charge only (no aidat), counted in debt", async () => {
+  const u = await mk("Eski Üye Geçmiş");
+  const s = Math.floor(Date.now() / H) * H - 60 * 24 * H; // joined this month, booking ~2 months back
+  const PAST = (await J(await t.fetch("/api/holds", { method: "POST", as: u, body: { start_ms: s, hours: 1 } }))) && new Date(s + 3 * H).toISOString().slice(0, 7);
+  assert.ok(PAST < u.joined_month);
+  const before = await bill(u);
+  assert.equal(before.months[0], u.joined_month); // nothing earlier yet
+  assert.equal((await t.fetch(`/api/billing?month=${PAST}`, { as: u })).status, 400);
+
+  const r = await t.fetch("/api/reservations", { method: "POST", as: u, body: { start_ms: s, hours: 1, people: 1 } });
+  assert.equal(r.status, 201);
+  const b = await bill(u, PAST);
+  assert.equal(b.months[0], PAST); // lower bound = oldest charge month
+  assert.ok(b.items.some((i) => i.kind === "booking"));
+  assert.ok(!b.items.some((i) => i.kind === "subscription")); // no aidat before joining
+  assert.equal((await t.db.execute({ sql: "SELECT COUNT(*) n FROM charges WHERE user_id = ? AND month = ? AND kind = 'subscription'", args: [u.id, PAST] })).rows[0].n, 0);
+  assert.ok(b.kalan > 0);
+  assert.ok(b.debt_months.some((d) => d.month === PAST));
+  const ov = await J(await t.fetch(`/api/admin/billing/overview?month=${M}`, { as: t.admin }));
+  assert.equal(ov.users.find((x) => x.id === u.id).debt_try, (await bill(u)).debt_try);
+  assert.ok(ov.months.includes(PAST));
+  assert.equal((await t.fetch(`/api/admin/users/${u.id}/billing?month=${PAST}`, { as: t.admin })).status, 200);
+  // voiding the booking (admin cancel) drops the bound back to joined_month
+  await t.db.execute({ sql: "UPDATE charges SET voided_at = ? WHERE user_id = ? AND month = ?", args: [Date.now(), u.id, PAST] });
+  assert.equal((await bill(u)).months[0], u.joined_month);
+});

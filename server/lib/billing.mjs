@@ -66,8 +66,14 @@ export const maxMonth = () => {
 };
 /** Months a member can browse: joined_month .. current + MAX_AHEAD (newest last). Future months are read-only
  *  projections - see billingPayload: a READ never materialises a future month's subscription charge. */
-export const browsableMonths = (user) => monthRange(user.joined_month, maxMonth());
-export const canBrowse = (user, month) => isMonth(month) && month >= user.joined_month && month <= maxMonth();
+export const browsableMonths = async (db, user) => monthRange(await browseFrom(db, user), maxMonth());
+export const canBrowse = async (db, user, month) => isMonth(month) && month >= (await browseFrom(db, user)) && month <= maxMonth();
+/** Lower browse bound: the earlier of joined_month and the user's oldest non-voided charge month (a back-filled booking
+ *  from before joining must stay reachable/payable; no subscription charge is ever made for those months). */
+export async function browseFrom(db, user) {
+  const r = (await db.execute({ sql: "SELECT MIN(month) AS m FROM charges WHERE user_id = ? AND voided_at IS NULL", args: [user.id] })).rows[0];
+  return r?.m && r.m < user.joined_month ? r.m : user.joined_month;
+}
 
 /**
  * Display-only "planned rent" for a FUTURE month that has no subscription charge yet: the fee in force for that month
@@ -157,6 +163,23 @@ export async function monthView(db, userId, month) {
     return it;
   });
   return { month, items, kalan, total, paid };
+}
+
+/**
+ * One user's cumulative unpaid: everything still owed across ALL months up to the current one (never future), per month.
+ * Same invariant as outstandingOverview's debt_try (MAX(amount - COVERED_SQL, 0) over non-voided/waived/fully-paid
+ * charges), so the member page, UserDetail and the Ödemeler table always agree. Bootstrap observer: always 0.
+ */
+export async function userDebt(db, userId) {
+  const { rows } = await db.execute({
+    sql: `SELECT c.month, SUM(MAX(c.amount_try - ${COVERED_SQL}, 0)) AS owed FROM charges c
+          WHERE c.user_id = ? AND c.user_id <> ${BOOTSTRAP_ID_SQL} AND c.month <= ?
+            AND c.voided_at IS NULL AND c.waived_at IS NULL AND c.paid_receipt_id IS NULL
+          GROUP BY c.month HAVING owed > 0 ORDER BY c.month`,
+    args: [userId, currentMonth()],
+  });
+  const months = rows.map((r) => ({ month: r.month, remaining_try: Number(r.owed) }));
+  return { debt_try: months.reduce((s, m) => s + m.remaining_try, 0), debt_months: months };
 }
 
 /**

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { BOOTSTRAP_ID_SQL, OBSERVER_NAME, isBootstrap, requireAdmin, requireAuth } from "../lib/auth.mjs";
-import { listHolds, releaseHold, setHold } from "../lib/holds.mjs";
+import { MAX_PAST_DAYS, listHolds, releaseHold, setHold } from "../lib/holds.mjs";
 import { LISTENER_NO_BOOKING, MAX_PEOPLE, OBSERVER_NO_BOOKING, cancelReservation, createReservation, listReservations, maxHours } from "../lib/reservations.mjs";
 
 const DAY = 86_400_000;
@@ -22,7 +22,7 @@ export default ({ db }) => {
     res.json(rows.map(({ id, name }) => ({ id, name })));
   }));
 
-  r.get("/reservations/config", guard(async (_req, res) => res.json({ max_hours: await maxHours(db), max_people: MAX_PEOPLE })));
+  r.get("/reservations/config", guard(async (_req, res) => res.json({ max_hours: await maxHours(db), max_people: MAX_PEOPLE, max_past_days: MAX_PAST_DAYS })));
 
   r.get("/reservations", guard(async (req, res) => {
     const from = req.query.from === undefined ? Date.now() - 7 * DAY : Number(req.query.from);
