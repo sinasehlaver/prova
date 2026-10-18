@@ -39,7 +39,7 @@ try {
   await page.goto(`${BASE}/i/${TOKEN}`, { waitUntil: "networkidle" });
   await page.waitForSelector(".tabbar");
   const tabs = await page.$$eval(".tab", (e) => e.map((x) => x.textContent));
-  if (tabs.join("|") !== "Takvim|Ödemelerim|Uyarılar|Yönetim") fail("tabs: " + tabs);
+  if (tabs.join("|") !== "Takvim|Rezervasyonlarım|Ödemelerim|Uyarılar|Yönetim") fail("tabs: " + tabs);
 
   // top-bar name -> profile sheet (name/phone form, role, joined month, logout); hash always names the rendered tab
   await page.click(".who-btn");
@@ -50,23 +50,43 @@ try {
   await page.waitForFunction(() => !document.querySelector(".sheet"));
   if (new URL(page.url()).hash !== "#calendar") fail("hash should follow the rendered tab: " + page.url());
 
-  // Takvim: day strip + slot list, book via the sheet (first free future slot; tomorrow 12:00 so it is always future), see it, cancel it
-  await page.waitForSelector(".strip-day");
-  // past days are browsable: strip starts before today, prev arrow is enabled
-  if ((await page.locator(".strip-day").first().getAttribute("class")).includes("today")) fail("strip should include past days");
-  await page.click(".strip-day.today");
+  // Takvim: 3 gün / 7 gün day heads + hour grid, book via the sheet (first free future slot; tomorrow 12:00 so it is always future), see it, cancel it
+  // Day n days from today: pin 3 gün, jump to Bugün, step the window with the arrows, click the head's column slot afterwards (index = n % 3).
+  const openDay = async (n) => {
+    await page.click('.view-toggle [role=radio]:has-text("3 gün")');
+    await page.locator(".cal-range .btn:not([disabled])").click({ timeout: 1500 }).catch(() => {}); // disabled = already on Bugün
+    for (let i = 0; i < Math.floor(n / 3); i++) await page.click(".week-nav .icon-btn >> nth=1");
+    return n % 3;
+  };
+  await page.waitForSelector(".cal-head");
+  await page.click('.view-toggle [role=radio]:has-text("3 gün")');
+  await page.locator(".cal-range .btn:not([disabled])").click({ timeout: 1500 }).catch(() => {}); // disabled = already on Bugün
+  if ((await page.locator(".cal-head").first().getAttribute("class")).includes("today") === false) fail("3 gün window should start on today");
+  // past days are browsable: the prev arrow works from today (history)
   if (await page.locator(".week-nav .icon-btn").first().isDisabled()) fail("prev arrow must work from today (history)");
-  // past hours are bookable (back-filling): first strip day's slots are enabled .past buttons, the sheet warns
-  await page.locator(".strip-day").first().click();
+  // past hours are bookable (back-filling): going back a window gives enabled .past buttons, the sheet warns
+  await page.click(".week-nav .icon-btn >> nth=0");
   await page.waitForSelector("button.slot.past");
   if (await page.locator("button.slot.past").first().isDisabled()) fail("past slots must be bookable");
   await page.locator("button.slot.past").first().click();
   await page.waitForSelector(".sheet .notice.info");
   await page.keyboard.press("Escape");
   await page.waitForFunction(() => !document.querySelector(".sheet"));
-  await page.click(".strip-day.today");
-  await page.click(".strip-day.today ~ .strip-day >> nth=0");
-  await page.click(".slot:not([disabled]) >> nth=4"); // 12:00
+  // Rezervasyon yap -> date field: jump straight to a far-past day (the server floor), hours + past note appear
+  await page.click(".cal .page-head .btn.primary");
+  await page.waitForSelector(".sheet .date-pick");
+  const floorDate = (await page.evaluate(() => fetch("/api/reservations/config").then((r) => r.json()))).earliest_date;
+  if ((await page.getAttribute(".sheet .date-pick", "data-min")) !== floorDate) fail("date min should be the server floor " + floorDate);
+  await page.click(".sheet .date-pick");
+  for (let i = 0; i < 40 && !(await page.$(`.ctl-day[data-iso="${floorDate}"]:not([disabled])`)); i++) await page.click(".ctl-nav[aria-label='Önceki yıl']:not([disabled]), .ctl-nav[aria-label='Önceki ay']:not([disabled])");
+  await page.click(`.ctl-day[data-iso="${floorDate}"]`);
+  await page.waitForSelector(".sheet [role=combobox]:not(.date-pick)", { state: "attached" });
+  await page.waitForSelector(".sheet .notice.info");
+  if ((await page.getAttribute(".sheet .date-pick", "data-value")) !== floorDate) fail("date field lost the picked day");
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector(".sheet"));
+  await openDay(1);
+  await page.click('.slot[data-hour="12"] >> nth=1'); // tomorrow 12:00 (columns = today, +1, +2)
   await page.waitForSelector(".sheet");
   await page.fill(".sheet input", "verify prova");
   await page.click('.stepper button[aria-label="Bir kişi artır"]'); // people 1 -> 2
@@ -79,28 +99,41 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.waitForSelector(".cal-week");
   await page.screenshot({ path: `${SHOTS}/calendar-week.png` });
+  // Rezervasyonlarım: month groups collapsed by default, grand total, expand, edit sheet opens prefilled (only if the booking is upcoming)
+  await page.click('.tab:has-text("Rezervasyonlarım")');
+  await page.waitForSelector(".mr-month");
+  if ((await page.getAttribute(".mr-head >> nth=0", "aria-expanded")) !== "false") fail("my reservations month not collapsed by default");
+  if (!(await page.textContent(".mr-grand")).includes("Genel toplam")) fail("my reservations grand total missing");
+  for (const h of await page.$$(".mr-head")) await h.click();
+  await page.waitForSelector(".mr-month.open .plain-list li");
+  const mine = ".mr-month li:has-text('verify prova')";
+  await page.waitForSelector(mine);
+  await page.click(`${mine} .btn:has-text('Düzenle')`);
+  await page.waitForSelector(".sheet");
+  if (!(await page.textContent(".sheet")).includes("Rezervasyonu düzenle")) fail("edit sheet title");
+  if ((await page.inputValue(".sheet input")) !== "verify prova") fail("edit sheet not prefilled");
+  if ((await page.textContent(".stepper output")).trim() !== "2") fail("edit sheet people not prefilled");
+  await page.click(".sheet .btn.primary");
+  await page.waitForSelector(".sheet", { state: "detached" });
+  await page.waitForSelector(".toast.show");
+  await page.screenshot({ path: `${SHOTS}/my-reservations.png` });
+  await page.click('.tab:has-text("Takvim")');
+  await page.waitForSelector(".cal-week");
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForSelector(".strip-day");
-  await page.click(".strip-day.today ~ .strip-day >> nth=0");
+  await page.waitForSelector(".cal-head");
+  await openDay(1);
   await page.click(".res.mine");
   await page.click(".sheet .btn.danger");
   await page.click(".sheet .btn.danger");
   await page.waitForFunction(() => !document.querySelector(".res.mine"));
 
-  // Gün / Hafta toggle: choice is remembered (localStorage prova.calview); the 390px week grid must not overflow
-  await page.click('.view-toggle [role=radio]:has-text("Hafta")');
-  await page.waitForSelector(".cal-week");
-  if ((await page.evaluate(() => localStorage.getItem("prova.calview"))) !== "week") fail("calendar view choice not remembered");
-  if ((await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) > 1) fail("week view overflows at 390px");
-  // Hafta: clicking a date head drills into Gün on that day (session only, not saved)
-  await page.click(".cal-heads .cal-head >> nth=2");
-  await page.waitForSelector(".cal-day");
-  if (!(await page.locator('.view-toggle [role=radio][aria-checked=true]').innerText()).includes("Gün")) fail("week head click did not switch to Gün");
-  if ((await page.evaluate(() => localStorage.getItem("prova.calview"))) !== "week") fail("week head click must not change the saved view");
-  await page.click('.view-toggle [role=radio]:has-text("Hafta")');
-  await page.waitForSelector(".cal-week");
-  await page.click('.view-toggle [role=radio]:has-text("Gün")');
-  await page.waitForSelector(".cal-day");
+  // 3 gün / 7 gün toggle: choice is remembered (localStorage prova.calview); the 390px 7-day grid must not overflow
+  await page.click('.view-toggle [role=radio]:has-text("7 gün")');
+  await page.waitForFunction(() => document.querySelectorAll(".cal-head").length === 7);
+  if ((await page.evaluate(() => localStorage.getItem("prova.calview"))) !== "7") fail("calendar view choice not remembered");
+  if ((await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)) > 1) fail("7 gün view overflows at 390px");
+  await page.click('.view-toggle [role=radio]:has-text("3 gün")');
+  await page.waitForFunction(() => document.querySelectorAll(".cal-head").length === 3);
   await page.evaluate(() => localStorage.removeItem("prova.calview"));
 
   // Hard gate: an admin cancelling ANOTHER member's booking. A member books via API (session = regenerated invite token),
@@ -118,8 +151,8 @@ try {
   });
   if (made.status !== 201) fail("member booking for the gate check: " + made.status);
   await page.reload({ waitUntil: "networkidle" });
-  await page.waitForSelector(".strip-day");
-  await page.click(".strip-day.today ~ .strip-day >> nth=5");
+  await page.waitForSelector(".cal-head");
+  await openDay(6);
   await page.click(".res:not(.mine)");
   await page.click(".sheet .btn.danger"); // "Yönetici olarak iptal et…" opens the gate, it does not cancel
   await page.waitForSelector(".danger-zone");
@@ -139,8 +172,8 @@ try {
   const heldRes = await fetch(`${BASE}/api/holds`, { method: "POST", headers: memberHdr, body: JSON.stringify({ start_ms: heldStart, hours: 2 }) });
   if (heldRes.status !== 200) fail("member hold: " + heldRes.status);
   await page.reload({ waitUntil: "networkidle" });
-  await page.waitForSelector(".strip-day");
-  await page.click(".strip-day.today ~ .strip-day >> nth=2");
+  await page.waitForSelector(".cal-head");
+  await openDay(3);
   await page.waitForSelector(".held");
   if (!(await page.textContent(".held")).includes("Rezerve ediliyor")) fail("held slot label");
   if (!(await page.textContent(".held")).includes("Ali Yılmaz seçiyor")) fail("held slot should name who is choosing");
@@ -286,6 +319,11 @@ try {
   await page.click(".subtabs button:has-text('Ücretler')");
   await page.waitForSelector(".fee-now");
   await page.screenshot({ path: `${SHOTS}/admin-fees.png`, fullPage: true });
+  if (await page.locator("form.card.form h3:has-text('Ayın ücretini değiştir')").count()) throw new Error("fees: static pane still inline");
+  await page.click(".plain-list li >> nth=0 >> button:has-text('Düzenle')");
+  await page.waitForSelector(".sheet input[type=number]");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".sheet", { state: "detached" });
   await page.click(".subtabs button:has-text('Ekonomi')");
   await page.waitForSelector(".eco-chart svg[role=img]");
   await page.waitForSelector(".eco-sug .eco-headline");

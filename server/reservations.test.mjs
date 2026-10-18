@@ -2,14 +2,16 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { makeTestApp } from "./test-helpers.mjs";
 import { newToken } from "./lib/auth.mjs";
-import { currentMonth, monthOf } from "./lib/tz.mjs";
+import { EARLIEST_MS, currentMonth, monthOf } from "./lib/tz.mjs";
 
 const H = 3600_000;
 const t = await makeTestApp();
 after(() => t.close());
 
 // whole-hour instants in the future; each test uses its own day so bookings never collide
-const day = (n) => Math.ceil((Date.now() + 2 * H) / H) * H + n * 24 * H;
+// 10:00 Istanbul on day (today + n + 1): always inside the 08-22 window (no reservation may end after 22:00)
+const at10 = (ms) => Math.floor((ms + 3 * H) / (24 * H)) * 24 * H - 3 * H + 10 * H;
+const day = (n) => at10(Date.now() + (n + 1) * 24 * H);
 const book = (as, start_ms, hours = 1, extra = {}) =>
   t.fetch("/api/reservations", { method: "POST", as, body: { start_ms, hours, ...extra } });
 
@@ -61,20 +63,25 @@ test("concurrent identical + overlapping POSTs: exactly one wins", async () => {
 test("validation: max duration, min 1h, past start, non-hour-aligned, bad people count", async () => {
   const s = day(4);
   assert.equal((await book(t.member, s, 4)).status, 201);
-  assert.equal((await book(t.member, day(5), 5)).status, 400); // > default max 4
+  assert.equal((await book(t.member, day(5), 5)).status, 201); // no max-hours cap (10:00-15:00)
+  assert.equal((await book(t.member, day(32), 13)).status, 400); // 10:00 + 13h ends 23:00 > 22:00
   assert.equal((await book(t.member, day(5), 0)).status, 400);
   assert.equal((await book(t.member, day(5), 1.5)).status, 400);
   assert.equal((await book(t.member, day(5) + 30 * 60_000, 1)).status, 400);
-  assert.equal((await book(t.member, Math.floor(Date.now() / H) * H - 200 * 24 * H, 1)).status, 400); // past the back-fill limit
+  assert.equal((await book(t.member, EARLIEST_MS - H, 1)).status, 400); // before the floor
   for (const people of [0, -1, 2.5, 21, "3"]) assert.equal((await book(t.member, day(5), 1, { people })).status, 400, `people=${people}`);
   assert.equal((await book(t.member, undefined, 1)).status, 400);
 });
 
-test("max hours comes from settings", async () => {
-  await t.db.execute("UPDATE settings SET value='2' WHERE key='max_reservation_hours'");
-  assert.equal((await book(t.member, day(6), 3)).status, 400);
-  assert.equal((await book(t.member, day(6), 2)).status, 201);
-  await t.db.execute("UPDATE settings SET value='4' WHERE key='max_reservation_hours'");
+test("no reservation ends after 22:00 Istanbul (book + hold)", async () => {
+  const s = day(30); // 10:00
+  assert.equal((await book(t.member, s, 12)).status, 201); // ends exactly 22:00
+  const late = day(31) + 11 * H; // 21:00 start
+  assert.equal((await book(t.member, late, 2)).status, 400);
+  assert.equal((await book(t.member, late + H, 1)).status, 400); // 22:00 start
+  assert.equal((await t.fetch("/api/holds", { method: "POST", as: t.member, body: { start_ms: late, hours: 2 } })).status, 400);
+  assert.equal((await t.fetch("/api/holds", { method: "POST", as: t.member, body: { start_ms: late, hours: 1 } })).status, 200);
+  assert.equal((await book(t.member, late, 1)).status, 201); // 21:00-22:00 ok
 });
 
 test("cancel: booker or admin only, frees the slot, not after start, listing hides cancelled", async () => {
@@ -200,9 +207,10 @@ test("back-filling past hours: booked + charged in that month, overlap/limit enf
   };
   const u = await mkOld("Geçmiş Deneme"), u2 = await mkOld("Eski Üye");
   const cfg = await (await t.fetch("/api/reservations/config", { as: u })).json();
-  assert.equal(cfg.max_past_days, 190);
+  assert.equal(cfg.earliest_ms, EARLIEST_MS);
+  assert.equal(cfg.earliest_date, "2025-01-01");
 
-  const s = Math.floor(Date.now() / H) * H - 60 * D; // a whole hour two months back
+  const s = at10(Date.now() - 60 * D); // a whole hour two months back
   assert.equal((await t.fetch("/api/holds", { method: "POST", as: u, body: { start_ms: s, hours: 2 } })).status, 200); // sheet's hold works in the past
   const r = await book(u, s, 2, { people: 2 });
   assert.equal(r.status, 201);
@@ -213,8 +221,10 @@ test("back-filling past hours: booked + charged in that month, overlap/limit enf
   assert.equal(ch[0].month, monthOf(s)); // charge lands in the reservation's (past) month
 
   assert.equal((await book(u2, s + H, 1)).status, 409); // overlap still checked in the past
-  assert.equal((await book(u, s - 191 * D, 1)).status, 400); // beyond MAX_PAST_DAYS
-  assert.equal((await t.fetch("/api/holds", { method: "POST", as: u, body: { start_ms: s - 191 * D, hours: 1 } })).status, 400);
+  assert.equal((await book(u, EARLIEST_MS - H, 1)).status, 400); // before the floor
+  assert.equal((await t.fetch("/api/holds", { method: "POST", as: u, body: { start_ms: EARLIEST_MS - H, hours: 1 } })).status, 400);
+  assert.equal((await book(u, EARLIEST_MS, 1)).status, 201); // the floor itself, ~1.5y back, is fine
+  assert.equal((await t.fetch("/api/reservations?from=" + EARLIEST_MS + "&to=" + (EARLIEST_MS + 400 * D), { as: u })).status, 200);
   assert.equal((await book(u, s + 30 * 60_000, 1)).status, 400); // still whole-hour aligned
 
   // before the booker's joined_month is fine now (existing members are back-filled)
@@ -244,4 +254,40 @@ test("'listener' role: can't book or hold, but sees reservations and appears in 
   const { id } = await (await book(t.member, s, 1)).json();
   const list = await (await t.fetch(`/api/reservations?from=${s - H}&to=${s + H}`, { as: listener })).json();
   assert.ok(list.some((x) => x.id === id));
+});
+
+test("GET /reservations/mine: own only, newest first, cancelled marked, auth required", async () => {
+  assert.equal((await t.fetch("/api/reservations/mine")).status, 401);
+  const a = await (await book(t.member, day(20), 1, { people: 3 })).json();
+  const b = await (await book(t.member, day(21), 1)).json();
+  const o = await (await book(t.member2, day(22), 1)).json();
+  assert.equal((await t.fetch(`/api/reservations/${b.id}`, { method: "DELETE", as: t.member })).status, 200);
+  const mine = await (await t.fetch("/api/reservations/mine", { as: t.member })).json();
+  const ids = mine.map((x) => x.id);
+  assert.ok(ids.includes(a.id) && ids.includes(b.id) && !ids.includes(o.id));
+  assert.ok(ids.indexOf(b.id) < ids.indexOf(a.id));
+  assert.ok(mine.find((x) => x.id === b.id).cancelled_at);
+  assert.equal(mine.find((x) => x.id === a.id).people, 3);
+  assert.ok("charge_try" in mine[0]);
+});
+
+test("PATCH /reservations/:id: owner edits time/people/note, charge re-priced, overlap + authz + validation, paid split in /mine", async () => {
+  const s = day(77);
+  const a = await (await book(t.member, s, 1, { people: 1 })).json();
+  const other = await (await book(t.member2, s + 3 * H, 1)).json();
+  const patch = (id, body, as = t.member) => t.fetch(`/api/reservations/${id}`, { method: "PATCH", as, body });
+  assert.equal((await patch(a.id, { start_ms: s + H, hours: 2, people: 3, note: "yeni" })).status, 200);
+  const mine = await (await t.fetch("/api/reservations/mine", { as: t.member })).json();
+  const m = mine.find((x) => x.id === a.id);
+  assert.equal(m.start_ms, s + H); assert.equal(m.end_ms, s + 3 * H); assert.equal(m.people, 3); assert.equal(m.note, "yeni");
+  assert.equal(m.month, monthOf(s));
+  if (m.charge_try != null) assert.equal(m.unpaid_try, m.charge_try);
+  assert.equal(m.paid_try, 0);
+  assert.equal((await patch(a.id, { start_ms: s + 3 * H, hours: 1 })).status, 409); // clashes with other
+  assert.equal((await patch(a.id, { start_ms: s + H, hours: 1 }, t.member2)).status, 403); // not the booker
+  assert.equal((await patch(a.id, { start_ms: s + H + 1, hours: 1 })).status, 400);
+  assert.equal((await patch(a.id, { start_ms: s + H, hours: 1, people: 99 })).status, 400);
+  assert.equal((await patch(a.id, { start_ms: s + 11 * H, hours: 2 })).status, 400); // curfew
+  assert.equal((await patch(999999, { start_ms: s, hours: 1 })).status, 404);
+  assert.equal((await t.fetch(`/api/reservations/${a.id}`, { method: "PATCH", body: {} })).status, 401);
 });

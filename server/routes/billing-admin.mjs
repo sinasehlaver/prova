@@ -113,12 +113,12 @@ export default ({ db }) => {
     res.json({ ok: true });
   }));
 
-  // ---- fee editor (new row from a FUTURE month; existing charges keep their snapshot)
+  // ---- fee editor: any month >= 2025-01; unpaid charges of that month are re-priced (see setFee). requireAdmin via the /admin mount.
   r.get("/admin/fees", guard(async (_req, res) => res.json(await listFees(db))));
   r.post("/admin/fees", guard(async (req, res) => {
     const b = req.body ?? {};
-    await setFee(db, { effectiveFrom: b.effective_from, subscriptionTry: b.subscription_try, bookingTry: b.booking_try });
-    res.status(201).json(await listFees(db));
+    const repriced = await setFee(db, { effectiveFrom: b.effective_from, subscriptionTry: b.subscription_try, bookingTry: b.booking_try });
+    res.status(201).json({ fees: await listFees(db), repriced });
   }));
 
   // ---- payment settings

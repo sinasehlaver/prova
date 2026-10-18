@@ -38,6 +38,24 @@ export async function addBookingCharges(tx, reservationId, bookerId, people, sta
   });
 }
 
+/** Inside the reservation-edit tx: re-price the booking charge to people x the NEW month's fee. A charge that is paid, part-covered or
+ *  waived is locked: only a same-month, same-people edit passes (409 otherwise). Unpaid / absent charge is moved + re-priced. */
+export async function repriceBookingCharge(tx, reservationId, bookerId, people, startMs) {
+  const month = monthOf(startMs);
+  const c = (await tx.execute({
+    sql: `SELECT c.*, ${COVERED_SQL} AS covered FROM charges c WHERE c.reservation_id = ? AND c.kind = 'booking' AND c.voided_at IS NULL`,
+    args: [reservationId],
+  })).rows[0];
+  if (!c) return addBookingCharges(tx, reservationId, bookerId, people, startMs);
+  const { booking_try } = await feeFor(tx, month);
+  const amount = booking_try * people;
+  if (c.paid_receipt_id || c.waived_at || Number(c.covered) > 0) {
+    if (c.month !== month || amount !== c.amount_try) throw fail(409, "Ödemesi alınmış rezervasyonun ay ya da kişi sayısı değiştirilemez");
+    return;
+  }
+  await tx.execute({ sql: "UPDATE charges SET month = ?, amount_try = ? WHERE id = ?", args: [month, amount, c.id] });
+}
+
 /** Inside the reservation-cancel tx: void the unpaid booking charges (paid ones stay). */
 export const voidBookingCharges = (tx, reservationId, now) =>
   tx.execute({
@@ -249,13 +267,39 @@ export const addAdjustment = (db, { userId, month, amountTry, note }) => serial(
 export const listFees = async (db) =>
   (await db.execute("SELECT id, effective_from, subscription_try, booking_try FROM fees ORDER BY effective_from DESC, id DESC")).rows;
 
-/** Admin fee editor: new fee in force from `effectiveFrom` (must be a FUTURE month - existing charges keep their snapshot). */
-export const setFee = (db, { effectiveFrom, subscriptionTry, bookingTry, now = Date.now() }) => serial(async () => {
-  if (!isMonth(effectiveFrom)) throw fail(400, "Geçersiz ay");
-  if (effectiveFrom <= monthOf(now)) throw fail(400, "Yeni ücret en erken gelecek aydan itibaren geçerli olabilir");
+/** Earliest month the fee editor accepts. */
+export const FEE_MIN_MONTH = "2025-01";
+
+/**
+ * Admin fee editor (decided 2026-10-18): set the fees of ONE month, any month >= FEE_MIN_MONTH (past, current, future).
+ * Model stays effective_from: a month override = upsert the row for `month` PLUS, if the next month has no row of its own,
+ * a row for next month carrying the fee that was in force for `month` before the edit - so other months never change.
+ * (Rows therefore accumulate, one per edited month; harmless, feeFor takes the latest <= month.)
+ * Then UNPAID charges of that month are re-priced: subscription -> new subscription_try, booking -> reservation people x
+ * new booking_try. Untouched: paid, partly covered, voided, waived, adjustments. Returns the number of re-priced charges.
+ * Whole TRY, multiples of 50, 0..100000.
+ */
+export const setFee = (db, { effectiveFrom: month, subscriptionTry, bookingTry }) => serial(async () => {
+  if (!isMonth(month) || month < FEE_MIN_MONTH) throw fail(400, "Geçersiz ay");
   for (const n of [subscriptionTry, bookingTry])
-    if (!Number.isInteger(n) || n < 0 || n > 1_000_000) throw fail(400, "Ücretler 0 veya pozitif tam sayı olmalı");
-  const same = (await db.execute({ sql: "SELECT id FROM fees WHERE effective_from = ?", args: [effectiveFrom] })).rows[0];
+    if (!Number.isInteger(n) || n < 0 || n > 100_000 || n % 50) throw fail(400, "Ücretler 0 ile 100.000 arasında, 50'nin katı tam sayı olmalı");
+  const old = await feeFor(db, month);
+  const next = nextMonth(month);
+  const nextRow = (await db.execute({ sql: "SELECT id FROM fees WHERE effective_from = ?", args: [next] })).rows[0];
+  if (!nextRow) await db.execute({ sql: "INSERT INTO fees (effective_from, subscription_try, booking_try) VALUES (?,?,?)", args: [next, old.subscription_try, old.booking_try] });
+  const same = (await db.execute({ sql: "SELECT id FROM fees WHERE effective_from = ?", args: [month] })).rows[0];
   if (same) await db.execute({ sql: "UPDATE fees SET subscription_try = ?, booking_try = ? WHERE id = ?", args: [subscriptionTry, bookingTry, same.id] });
-  else await db.execute({ sql: "INSERT INTO fees (effective_from, subscription_try, booking_try) VALUES (?,?,?)", args: [effectiveFrom, subscriptionTry, bookingTry] });
+  else await db.execute({ sql: "INSERT INTO fees (effective_from, subscription_try, booking_try) VALUES (?,?,?)", args: [month, subscriptionTry, bookingTry] });
+  const open = `c.month = ?1 AND c.voided_at IS NULL AND c.waived_at IS NULL AND c.paid_receipt_id IS NULL AND ${COVERED_SQL} = 0`;
+  const a = await db.execute({
+    sql: `UPDATE charges AS c SET amount_try = ?2 WHERE c.kind = 'subscription' AND c.amount_try <> ?2 AND ${open}`,
+    args: [month, subscriptionTry],
+  });
+  const b = await db.execute({
+    sql: `UPDATE charges AS c SET amount_try = ?2 * (SELECT r.people FROM reservations r WHERE r.id = c.reservation_id)
+          WHERE c.kind = 'booking' AND c.reservation_id IS NOT NULL AND ${open}
+            AND c.amount_try <> ?2 * (SELECT r.people FROM reservations r WHERE r.id = c.reservation_id)`,
+    args: [month, bookingTry],
+  });
+  return a.rowsAffected + b.rowsAffected;
 });

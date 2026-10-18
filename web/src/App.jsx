@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { api, AUTH_EVENT } from "./api.js";
 import { tr } from "./tr.js";
-import { BellIcon, CalendarIcon, MoonIcon, ShieldIcon, SunIcon, WalletIcon } from "./icons.jsx";
+import { BellIcon, CalendarIcon, MoonIcon, ShieldIcon, SunIcon, WalletIcon, ListIcon } from "./icons.jsx";
 import Admin from "./Admin.jsx";
 import Billing from "./Billing.jsx";
+import MyReservations from "./MyReservations.jsx";
 import Calendar from "./Calendar.jsx";
 import Alerts, { AlertBadges } from "./Alerts.jsx";
 import AlertKinds from "./AlertKinds.jsx";
@@ -12,6 +13,7 @@ import { Boot, ErrorState, Skeleton } from "./States.jsx";
 
 const TABS = [
   { id: "calendar", Icon: CalendarIcon },
+  { id: "myRes", Icon: ListIcon },
   { id: "payments", Icon: WalletIcon },
   { id: "alerts", Icon: BellIcon },
   { id: "admin", Icon: ShieldIcon, admin: true },
@@ -181,7 +183,7 @@ export default function App() {
   // The cookie is shared by all tabs of this browser: re-validate the identity on focus and after any 401/403.
   const recheck = useCallback(() =>
     api("GET", "/me").then(
-      (n) => setMe((o) => (o && o.id === n.id && o.role === n.role && o.name === n.name && o.phone === n.phone && o.status === n.status && o.observer === n.observer ? o : n)),
+      (n) => setMe((o) => (o && o.id === n.id && o.role === n.role && o.name === n.name && o.phone === n.phone && o.accent === n.accent && o.status === n.status && o.observer === n.observer ? o : n)),
       (e) => { if (e.status === 401) setMe(null); }), []);
   useEffect(() => {
     let last = 0;
@@ -204,6 +206,17 @@ export default function App() {
     try { localStorage.setItem("prova.theme", next); } catch {}
     setTheme(next);
   }, [theme]);
+
+  // per-user accent: <html data-accent> (brick = default, no attribute); cached for the no-flash script in index.html
+  const accent = me === undefined ? undefined : me?.accent;
+  useEffect(() => {
+    if (accent === undefined) return;
+    const root = document.documentElement;
+    try {
+      if (accent && accent !== "brick") { root.setAttribute("data-accent", accent); localStorage.setItem("prova.accent", accent); }
+      else { root.removeAttribute("data-accent"); localStorage.removeItem("prova.accent"); }
+    } catch {}
+  }, [accent]);
 
   if (me === undefined && bootErr) return <main className="boot"><div className="boot-card"><ErrorState message={tr.err.boot} onRetry={boot} /></div></main>;
   if (me === undefined) return <Boot />;
@@ -249,7 +262,7 @@ function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
         </button>
       </header>
       <main className="page" key={`${me.id}:${me.role}`}>
-        {active === "admin" ? <AdminGate me={me} recheck={recheck}><Admin me={me} extra={<AlertKinds />} pendingCount={pendingCount} /></AdminGate> : active === "payments" ? <Billing /> : active === "alerts" ? <Alerts /> : active === "calendar" ? <Calendar me={me} /> : <Placeholder id={active} />}
+        {active === "admin" ? <AdminGate me={me} recheck={recheck}><Admin me={me} extra={<AlertKinds />} pendingCount={pendingCount} /></AdminGate> : active === "payments" ? <Billing /> : active === "alerts" ? <Alerts /> : active === "myRes" ? <MyReservations /> : active === "calendar" ? <Calendar me={me} /> : <Placeholder id={active} />}
       </main>
       <nav className="tabbar" aria-label="Ana menü">
         {tabs.map(({ id, Icon }) => (

@@ -2,12 +2,15 @@ import React, { useEffect, useId, useRef, useState } from "react";
 import { api, apiUpload } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon } from "./icons.jsx";
+import Sheet from "./Sheet.jsx";
+import { MonthPicker, Select } from "./Controls.jsx";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
 import { CheckG, CreditCard, CreditCover, DashG, DebtCard, ItemList, KalanCard, MonthNav, PaySummary, StatusPill, UploadG, chargeName, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
 
 const A = tr.admin;
 const fmtDateTimeShort = (ms) => new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Europe/Istanbul" }).format(ms);
 const keyOf = (it) => it.key ?? String(it.id); // charge id, or `sub:YYYY-MM` for a future month's planned rent (prepay)
+const prevOf = (m) => (m.slice(5) === "01" ? `${+m.slice(0, 4) - 1}-12` : `${m.slice(0, 5)}${String(+m.slice(5) - 1).padStart(2, "0")}`);
 const nextOf = (m) => (m.slice(5) === "12" ? `${+m.slice(0, 4) + 1}-01` : `${m.slice(0, 5)}${String(+m.slice(5) + 1).padStart(2, "0")}`);
 
 export function useToast() {
@@ -339,16 +342,10 @@ export function Payments({ onDetail }) {
       <h3 className="sec-title">{A.receiptsTitle}</h3>
       <div className="filters">
         <label className="field"><span>{A.member}</span>
-          <select value={f.user_id} onChange={(e) => setF({ ...f, user_id: e.target.value })}>
-            <option value="">{A.all}</option>
-            {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
+          <Select value={String(f.user_id)} onChange={(v) => setF({ ...f, user_id: v })} options={[{ value: "", label: A.all }, ...users.map((u) => ({ value: String(u.id), label: u.name }))]} />
         </label>
         <label className="field"><span>{A.statusLabel}</span>
-          <select value={f.status} onChange={(e) => setF({ ...f, status: e.target.value })}>
-            <option value="">{A.all}</option>
-            {STATUS_OPTS.map((s) => <option key={s} value={s}>{tr.billing.status[s === "ok" ? "paid" : s]}</option>)}
-          </select>
+          <Select value={f.status} onChange={(v) => setF({ ...f, status: v })} options={[{ value: "", label: A.all }, ...STATUS_OPTS.map((s) => ({ value: s, label: tr.billing.status[s === "ok" ? "paid" : s] }))]} />
         </label>
       </div>
       <label className="check"><input type="checkbox" checked={allMonths} onChange={(e) => setAllMonths(e.target.checked)} /><span>{A.allMonths}</span></label>
@@ -488,50 +485,61 @@ export function UserDetail({ user, onBack }) {
 export function Fees() {
   const [fees, setFees] = useState(null);
   const [form, setForm] = useState({ effective_from: nextOf(nowMonth()), subscription_try: "", booking_try: "" });
+  const [open, setOpen] = useState(false);
   const [say, toast] = useToast();
   const [loadErr, setLoadErr] = useState("");
   const loadFees = () => { setLoadErr(""); api("GET", "/admin/fees").then(setFees, (e) => setLoadErr(e.message || tr.err.load)); };
   useEffect(loadFees, []); // eslint-disable-line react-hooks/exhaustive-deps
   const now = nowMonth();
-  const cur = fees?.find((x) => x.effective_from <= now);
-  useEffect(() => { if (cur && form.subscription_try === "") setForm((f) => ({ ...f, subscription_try: cur.subscription_try, booking_try: cur.booking_try })); }, [cur]); // eslint-disable-line react-hooks/exhaustive-deps
+  const feeOf = (m) => fees?.find((x) => x.effective_from <= m); // fees is newest-first: first row <= m is the one in force
+  const cur = feeOf(now);
+  const months = []; // 2025-01 .. current+12, newest first
+  if (fees) { let m = now; for (let i = 0; i < 12; i++) m = nextOf(m); for (; m >= "2025-01"; m = prevOf(m)) months.push(m); }
+  const pick = (m) => { const f = feeOf(m); if (f) setForm({ effective_from: m, subscription_try: f.subscription_try, booking_try: f.booking_try }); };
+  const openFor = (m) => { const f = feeOf(m); setForm({ effective_from: m, subscription_try: f ? f.subscription_try : "", booking_try: f ? f.booking_try : "" }); setOpen(true); };
   const save = async (e) => {
     e.preventDefault();
     try {
-      setFees(await api("POST", "/admin/fees", { effective_from: form.effective_from, subscription_try: Number(form.subscription_try), booking_try: Number(form.booking_try) }));
-      say(A.feesSaved);
+      const res = await api("POST", "/admin/fees", { effective_from: form.effective_from, subscription_try: Number(form.subscription_try), booking_try: Number(form.booking_try) });
+      setFees(res.fees);
+      setOpen(false);
+      say(res.repriced ? `${A.feesRepriced} ${res.repriced}` : A.feesSaved);
     } catch (err) { say(err.message); }
   };
   return (
     <section>
-      <div className="page-head"><h2>{A.feesTitle}</h2></div>
+      <div className="page-head"><h2>{A.feesTitle}</h2>{fees && <button type="button" className="btn primary" onClick={() => openFor(nextOf(now))}>{A.feesNew}</button>}</div>
       {!fees && (loadErr ? <ErrorState message={loadErr} onRetry={loadFees} /> : <Skeleton rows={1} />)}
+      {open && (
+        <Sheet title={A.feesNew} onClose={() => setOpen(false)}>
+          <form className="form" onSubmit={save}>
+            <label className="field"><span>{A.feesFrom}</span><MonthPicker min="2025-01" value={form.effective_from} onChange={(m) => { pick(m); setForm((f) => ({ ...f, effective_from: m })); }} /></label>
+            <div className="filters" style={{ marginBottom: 0 }}>
+              <label className="field"><span>{A.feesSub}</span><input type="number" min="0" step="50" required data-autofocus value={form.subscription_try} onChange={(e) => setForm({ ...form, subscription_try: e.target.value })} /></label>
+              <label className="field"><span>{A.feesBook}</span><input type="number" min="0" step="50" required value={form.booking_try} onChange={(e) => setForm({ ...form, booking_try: e.target.value })} /></label>
+            </div>
+            <p className="hint">{A.feesNote}</p>
+            <div className="row end"><button className="btn primary">{A.feesSave}</button></div>
+          </form>
+        </Sheet>
+      )}
       {cur && (
         <div className="card fee-now" aria-label={A.feesNow}>
           <div><small>{A.feesSub}</small><b className="amount">{fmtTRY(cur.subscription_try)}</b></div>
           <div><small>{A.feesBook}</small><b className="amount">{fmtTRY(cur.booking_try)}</b></div>
         </div>
       )}
-      <form className="card form" onSubmit={save}>
-        <h3>{A.feesNew}</h3>
-        <label className="field"><span>{A.feesFrom}</span><input type="month" required min={nextOf(now)} value={form.effective_from} onChange={(e) => setForm({ ...form, effective_from: e.target.value })} /></label>
-        <div className="filters" style={{ marginBottom: 0 }}>
-          <label className="field"><span>{A.feesSub}</span><input type="number" min="0" step="50" required value={form.subscription_try} onChange={(e) => setForm({ ...form, subscription_try: e.target.value })} /></label>
-          <label className="field"><span>{A.feesBook}</span><input type="number" min="0" step="50" required value={form.booking_try} onChange={(e) => setForm({ ...form, booking_try: e.target.value })} /></label>
-        </div>
-        <p className="hint">{A.feesNote}</p>
-        <div className="row end"><button className="btn primary">{A.feesSave}</button></div>
-      </form>
       {fees && (
         <>
           <h3 className="sec-title">{A.feesHistory}</h3>
           <ul className="card plain-list">
-            {fees.map((x) => (
-              <li key={x.id}>
-                <span>{x.effective_from === "2000-01" ? "—" : monthLabel(x.effective_from)}</span>
-                <span className="num">{fmtTRY(x.subscription_try)} · {fmtTRY(x.booking_try)}</span>
+            {months.map((m) => { const x = feeOf(m); return (
+              <li key={m}>
+                <span>{monthLabel(m)}</span>
+                <span className="num">{x ? `${fmtTRY(x.subscription_try)} · ${fmtTRY(x.booking_try)}` : "—"}</span>
+                <button type="button" className="btn" onClick={() => openFor(m)}>{A.feesEdit}</button>
               </li>
-            ))}
+            ); })}
           </ul>
         </>
       )}

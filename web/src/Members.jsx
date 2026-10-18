@@ -2,7 +2,14 @@ import React, { useEffect, useRef, useState } from "react";
 import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
+import { ConfirmSheet, Select } from "./Controls.jsx";
 import { PlusIcon } from "./icons.jsx";
+
+const ROLE_OPTS = [
+  { value: "member", label: tr.members.roleMember },
+  { value: "listener", label: tr.members.roleListener },
+  { value: "admin", label: tr.members.roleAdmin },
+];
 
 export default function Members({ me, onDetail }) {
   const [users, setUsers] = useState(null);
@@ -10,6 +17,7 @@ export default function Members({ me, onDetail }) {
   const [form, setForm] = useState({ name: "", email: "", phone: "", role: "member" });
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sure, setSure] = useState(null); // member pending a reject confirm
   const timer = useRef();
 
   const say = (m) => { setToast(m); clearTimeout(timer.current); timer.current = setTimeout(() => setToast(""), 2200); };
@@ -33,8 +41,8 @@ export default function Members({ me, onDetail }) {
     } catch (err) { fail(err); } finally { setBusy(false); }
   };
 
-  const decide = async (u, action) => {
-    if (action === "reject" && !confirm(tr.members.rejectConfirm(u.name))) return;
+  const decide = async (u, action, confirmed) => {
+    if (action === "reject" && !confirmed) { setSure(u); return; }
     try {
       await api("POST", `/users/${u.id}/${action}`);
       say(action === "approve" ? tr.members.approved : tr.members.rejected);
@@ -50,6 +58,7 @@ export default function Members({ me, onDetail }) {
 
   return (
     <section>
+      {sure && <ConfirmSheet title={tr.members.reject} body={tr.members.rejectConfirm(sure.name)} confirmLabel={tr.members.reject} danger onClose={() => setSure(null)} onConfirm={() => decide(sure, "reject", true)} />}
       <div className="page-head">
         <h2>{tr.members.title}</h2>
         {!adding && <button className="btn primary" onClick={() => setAdding(true)}><PlusIcon width="18" height="18" />{tr.members.add}</button>}
@@ -71,11 +80,7 @@ export default function Members({ me, onDetail }) {
           </label>
           <label className="field">
             <span>{tr.members.role}</span>
-            <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-              <option value="member">{tr.members.roleMember}</option>
-              <option value="listener">{tr.members.roleListener}</option>
-              <option value="admin">{tr.members.roleAdmin}</option>
-            </select>
+            <Select value={form.role} onChange={(v) => setForm({ ...form, role: v })} options={ROLE_OPTS} />
           </label>
           <div className="row end">
             <button type="button" className="btn ghost" onClick={() => setAdding(false)}>{tr.members.cancel}</button>
@@ -124,11 +129,7 @@ export default function Members({ me, onDetail }) {
                 {u.id !== me.id && (
                   <label className="field-inline">
                     <span className="muted small">{tr.members.role}</span>
-                    <select className="role-select" value={u.role} onChange={(e) => changeRole(u, e.target.value)}>
-                      <option value="member">{tr.members.roleMember}</option>
-                      <option value="listener">{tr.members.roleListener}</option>
-                      <option value="admin">{tr.members.roleAdmin}</option>
-                    </select>
+                    <Select className="sm" ariaLabel={tr.members.role} value={u.role} onChange={(v) => changeRole(u, v)} options={ROLE_OPTS} />
                   </label>
                 )}
               </div>

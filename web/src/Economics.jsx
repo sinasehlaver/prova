@@ -4,6 +4,7 @@ import "./economics.css";
 import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { ErrorState, Skeleton } from "./States.jsx";
+import { Select } from "./Controls.jsx";
 import { MonthNav, monthLabel } from "./Billing.jsx";
 import { useToast } from "./AdminBilling.jsx";
 
@@ -140,10 +141,7 @@ function CatPicker({ cats, value, onChange }) {
   return (
     <div className="eco-cat">
       <label className="field"><span>{E.category}</span>
-        <select value={custom ? CUSTOM : value} onChange={(e) => onChange(e.target.value === CUSTOM ? CUSTOM : e.target.value)}>
-          {cats.map((c) => <option key={c} value={c}>{c}</option>)}
-          <option value={CUSTOM}>{E.custom}</option>
-        </select>
+        <Select value={custom ? CUSTOM : value} onChange={onChange} options={[...cats.map((c) => ({ value: c, label: c })), { value: CUSTOM, label: E.custom }]} />
       </label>
       {custom && <label className="field"><span className="sr">{E.customPh}</span><input placeholder={E.customPh} value={value === CUSTOM ? "" : value} maxLength={40} required onChange={(e) => onChange(e.target.value || CUSTOM)} /></label>}
     </div>

@@ -24,7 +24,7 @@
 label.bill-item { cursor: pointer; }
 label.bill-item:hover { background: var(--surface2); }
 label.bill-item:active { background: color-mix(in srgb, var(--surface2) 70%, var(--accent-tint)); }
-.bill-item input[type="checkbox"] { width: 1.25rem; height: 1.25rem; accent-color: var(--accent); margin: 0; }
+.bill-item input[type="checkbox"] { margin: 0; }
 .bill-item:has(input:focus-visible) { box-shadow: inset var(--ring); }
 .bill-glyph { width: 1.25rem; display: grid; place-items: center; color: var(--muted); }
 .bill-title { font-weight: 600; font-size: var(--fs-2); }
@@ -77,8 +77,8 @@ a.link:hover { text-decoration: underline; filter: brightness(1.1); }
 .subtabs button:active { transform: scale(0.97); }
 .subtabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-ink); box-shadow: var(--shadow-sm); }
 .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)); gap: var(--s-3); margin-bottom: var(--s-4); }
-.field select, .field input[type="month"], .field input[type="number"] { width: 100%; }
-.field input[type="month"], .field input[type="number"] { min-height: 2.75rem; padding: 0 var(--s-3); border-radius: var(--r-md); border: 1px solid var(--line); background: var(--bg); font-weight: 400; font-size: var(--fs-3); }
+.field input[type="number"] { width: 100%; }
+.field input[type="number"] { min-height: 2.75rem; padding: 0 var(--s-3); border-radius: var(--r-md); border: 1px solid var(--line); background: var(--bg); font-weight: 400; font-size: var(--fs-3); }
 .a-rcpt { padding: var(--s-4); display: grid; gap: var(--s-3); }
 .a-rcpt:hover { box-shadow: var(--shadow-md); }
 .a-rcpt-top { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; }
@@ -264,3 +264,16 @@ a.link:hover { text-decoration: underline; filter: brightness(1.1); }
 .pay-credit:focus-within { border-color: var(--good); }
 .pay-credit .hint { margin: 0; }
 .warn-text { color: var(--warn); margin: 0; }
+
+/* My reservations: month groups (collapsed by default) with paid / unpaid totals */
+.mr-grand { display: flex; padding: var(--s-3) var(--s-4); margin-bottom: var(--s-3); background: var(--surface2); }
+.mr-totals { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); }
+.mr-month { margin-bottom: var(--s-3); overflow: hidden; }
+.mr-head { display: flex; align-items: center; gap: var(--s-3); width: 100%; min-height: 2.75rem; padding: var(--s-2) var(--s-4); background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; flex-wrap: wrap; transition: background 160ms cubic-bezier(.22,.61,.36,1), transform 120ms cubic-bezier(.22,.61,.36,1); }
+.mr-head:hover { background: var(--surface2); }
+.mr-head:active { transform: scale(.985); }
+.mr-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.mr-title { flex: 1 1 8rem; font-weight: 600; }
+.mr-chev { width: 18px; height: 18px; flex: none; transition: transform 300ms cubic-bezier(.22,.61,.36,1); }
+.mr-month.open .mr-chev { transform: rotate(90deg); }
+.mr-month .plain-list { border-top: 1px solid var(--line); }

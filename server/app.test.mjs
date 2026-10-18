@@ -193,6 +193,19 @@ test("PATCH /api/me: own name + phone only, name required, validated", async () 
   assert.notEqual((await t.fetch("/api/me", { as: t.member }).then((r) => r.json())).name, "Yeni Ad");
 });
 
+test("PATCH /api/me accent: own choice only, allowlisted, default brick, other users untouched", async () => {
+  const u = (await (await t.fetch("/api/users", { method: "POST", as: t.admin, body: { name: "Renk Test" } })).json());
+  assert.equal((await t.fetch("/api/me", { as: u }).then((r) => r.json())).accent, "brick");
+  const ok = await t.fetch("/api/me", { method: "PATCH", as: u, body: { name: "Renk Test", accent: "blue" } });
+  assert.equal((await ok.json()).accent, "blue");
+  assert.equal((await t.fetch("/api/me", { as: u }).then((r) => r.json())).accent, "blue");
+  for (const bad of ["red", "", null, 5, "blue;x", { a: 1 }])
+    assert.equal((await t.fetch("/api/me", { method: "PATCH", as: u, body: { name: "Renk Test", accent: bad } })).status, 400, JSON.stringify(bad));
+  const kept = await (await t.fetch("/api/me", { method: "PATCH", as: u, body: { name: "Renk Test" } })).json(); // omitted = unchanged
+  assert.equal(kept.accent, "blue");
+  assert.equal((await t.fetch("/api/me", { as: t.member }).then((r) => r.json())).accent, "brick");
+});
+
 test("POST /api/logout clears the cookie but keeps the invite token valid", async () => {
   const r = await t.fetch("/api/logout", { method: "POST", as: t.member });
   assert.equal(r.status, 200);

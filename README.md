@@ -97,8 +97,12 @@ Go to the **Takvim** (Calendar) tab.
 - Tap a free slot to book it, or drag across several hours. Pick how many
   people are coming — the cost is per-person, and guests don't need to be
   members.
+- Bookings must end by **22:00** (no reservations run past 22:00 because of
+  noise). The grid shows 08:00–22:00; the duration choices stop at 22:00 or
+  the next booked slot, whichever comes first.
+- Pick any date from the date field in the booking sheet.
 - You can also book a **past** hour (e.g. a rehearsal that happened but was
-  never booked), up to 190 days back.
+  never booked), back to 1 January 2025.
   Past hours look dimmer; the sheet warns that the cost goes onto that
   month's bill and that only an admin can cancel it afterwards.
 - While you have the booking sheet open, that time slot is held for ~2 minutes
@@ -108,6 +112,9 @@ Go to the **Takvim** (Calendar) tab.
   — that gets logged. Only admins can also cancel **past** (already started)
   bookings, with the same name + reason check; unpaid charges are voided, paid
   ones stay.
+- **Rezervasyonlarım** (My reservations) lists your own bookings grouped by
+  month (newest first, collapsed by default), with paid/unpaid totals per month
+  and overall. You can edit or cancel an upcoming booking from there.
 
 ### Paying your dues
 
@@ -163,8 +170,10 @@ Everything above, plus, under **Yönetim** (Admin):
   and the PDF if there is one. Member-uploaded dekonts show up as the same
   kind of draft ("Onay bekliyor") — pick the items + amount and approve, or
   reject with a reason.
-- **Ücretler** — set the monthly dues and per-person booking fee (changes
-  apply from next month, never retroactively).
+- **Ücretler** — set the monthly dues and per-person booking fee for any month
+  from January 2025 on (edit a month from its **Düzenle** button). A change
+  re-prices that month's unpaid charges only; paid, partly paid and waived
+  items keep their amount.
 - **Ekonomi** — income vs. cost chart for the last 6 months, and a suggested
   fee increase if costs have outpaced what's coming in.
 - **Uyarı türleri** — add/edit/reorder the alert buttons.

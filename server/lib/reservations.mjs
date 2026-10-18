@@ -1,24 +1,19 @@
 // Reservation write path. Phase 4 (billing) hooks into createReservation / cancelReservation at the
 // marked HOOK points, inside the same write transaction, so booking + charges commit or roll back together.
 import { serial } from "./serial.mjs";
-import { addBookingCharges, voidBookingCharges } from "./billing.mjs";
-import { MAX_PAST_DAYS, dropHoldRaw, foreignHoldRaw, pastLimit } from "./holds.mjs";
+import { addBookingCharges, repriceBookingCharge, voidBookingCharges } from "./billing.mjs";
+import { dropHoldRaw, foreignHoldRaw } from "./holds.mjs";
+import { CURFEW_MSG, EARLIEST_DATE, EARLIEST_MS, endsByCurfew } from "./tz.mjs";
 import { bootstrapId } from "./auth.mjs";
 export const HOUR = 3600_000;
 /** The bootstrap admin is an observer account (not a member): it can't book or hold a slot. */
 export const OBSERVER_NO_BOOKING = "Gözlemci yönetici hesabı rezervasyon yapamaz";
 /** A 'listener' pays the monthly fee like any member but can't book or hold a slot - it can only see the calendar. */
 export const LISTENER_NO_BOOKING = "Üye hesabı rezervasyon yapamaz";
-export const DEFAULT_MAX_HOURS = 4;
 export const MAX_PEOPLE = 20;
 
 const fail = (status, error) => Object.assign(new Error(error), { status });
 
-export async function maxHours(db) {
-  const { rows } = await db.execute("SELECT value FROM settings WHERE key = 'max_reservation_hours'");
-  const n = Number(rows[0]?.value);
-  return Number.isInteger(n) && n >= 1 ? n : DEFAULT_MAX_HOURS;
-}
 
 
 /** Full reservation objects (with booker name + people count) overlapping [from, to), non-cancelled. */
@@ -34,18 +29,17 @@ export async function listReservations(db, from, to) {
 
 /**
  * Create a booking. Throws Error with .status (400 validation, 403 bootstrap/observer admin, 409 overlap).
- * startMs must be whole-hour aligned; past starts are allowed (back-filling) up to MAX_PAST_DAYS (also before the
- * booker's joined_month: existing members are back-filled; billing browse then reaches that month, see browseFrom); hours 1..max; people 1..MAX_PEOPLE (guests need not be members,
+ * startMs must be whole-hour aligned; past starts are allowed (back-filling) back to EARLIEST_MS (also before the
+ * booker's joined_month: existing members are back-filled; billing browse then reaches that month, see browseFrom); hours >=1 ending by 22:00 Istanbul; people 1..MAX_PEOPLE (guests need not be members,
  * the booker pays people x per-person fee).
  */
 export function createReservation(db, { bookerId, bookerRole, startMs, hours, note = null, people = 1, now = Date.now() }) {
   return serial(async () => {
     if (!Number.isSafeInteger(startMs) || startMs % HOUR !== 0) throw fail(400, "Başlangıç tam saat olmalı");
     if (!Number.isInteger(hours) || hours < 1) throw fail(400, "En az 1 saat seçmelisin");
-    const max = await maxHours(db);
-    if (hours > max) throw fail(400, `En fazla ${max} saat rezerve edilebilir`);
-    if (startMs < pastLimit(now)) throw fail(400, `En fazla ${MAX_PAST_DAYS} gün geriye rezervasyon eklenebilir`);
+    if (startMs < EARLIEST_MS) throw fail(400, `En erken ${EARLIEST_DATE} tarihine rezervasyon eklenebilir`);
     const endMs = startMs + hours * HOUR;
+    if (!endsByCurfew(startMs, endMs)) throw fail(400, CURFEW_MSG);
     if (!Number.isInteger(people) || people < 1 || people > MAX_PEOPLE) throw fail(400, `Kişi sayısı 1-${MAX_PEOPLE} olmalı`);
     if (bookerRole === "listener") throw fail(403, LISTENER_NO_BOOKING);
     if (bookerId === (await bootstrapId(db))) throw fail(403, OBSERVER_NO_BOOKING);
@@ -70,6 +64,46 @@ export function createReservation(db, { bookerId, bookerRole, startMs, hours, no
       await dropHoldRaw(tx, bookerId); // the booker's own hold is consumed
       await tx.commit();
       return id;
+    } catch (e) {
+      await tx.rollback().catch(() => {});
+      throw e;
+    } finally {
+      tx.close();
+    }
+  });
+}
+
+/**
+ * Edit own booking (start / hours / note / people). Same validation + overlap + soft-hold rules as createReservation (own row excluded
+ * from the overlap check); the booking charge is re-priced in the same tx (locked when paid, see repriceBookingCharge).
+ * Only the booker; a started/past booking is admin-only to edit (same as cancel). Throws with .status.
+ */
+export function updateReservation(db, id, user, { startMs, hours, note = null, people = 1, now = Date.now() }) {
+  return serial(async () => {
+    if (!Number.isSafeInteger(startMs) || startMs % HOUR !== 0) throw fail(400, "Başlangıç tam saat olmalı");
+    if (!Number.isInteger(hours) || hours < 1) throw fail(400, "En az 1 saat seçmelisin");
+    if (startMs < EARLIEST_MS) throw fail(400, `En erken ${EARLIEST_DATE} tarihine rezervasyon eklenebilir`);
+    const endMs = startMs + hours * HOUR;
+    if (!endsByCurfew(startMs, endMs)) throw fail(400, CURFEW_MSG);
+    if (!Number.isInteger(people) || people < 1 || people > MAX_PEOPLE) throw fail(400, `Kişi sayısı 1-${MAX_PEOPLE} olmalı`);
+    const cleanNote = String(note ?? "").trim().slice(0, 200) || null;
+    const tx = await db.transaction("write");
+    try {
+      const r = (await tx.execute({ sql: "SELECT * FROM reservations WHERE id = ?", args: [id] })).rows[0];
+      if (!r || r.cancelled_at) throw fail(404, "Rezervasyon bulunamadı");
+      if (r.booker_id !== user.id) throw fail(403, "Bu rezervasyonu sadece oluşturan düzenleyebilir");
+      if (r.start_ms <= now && user.role !== "admin") throw fail(409, "Başlamış rezervasyon düzenlenemez");
+      const clash = (await tx.execute({
+        sql: "SELECT 1 FROM reservations WHERE cancelled_at IS NULL AND id <> ? AND start_ms < ? AND end_ms > ? LIMIT 1",
+        args: [id, endMs, startMs],
+      })).rows[0];
+      if (clash) throw fail(409, "Bu saat aralığı dolu. Başka bir saat seç.");
+      const held = await foreignHoldRaw(tx, user.id, startMs, endMs, now);
+      if (held) throw fail(409, `Bu saat az önce başkası (${held.user_name}) tarafından ayrıldı. Birazdan tekrar dene ya da başka bir saat seç.`);
+      await tx.execute({ sql: "UPDATE reservations SET start_ms = ?, end_ms = ?, note = ?, people = ? WHERE id = ?", args: [startMs, endMs, cleanNote, people, id] });
+      await repriceBookingCharge(tx, id, user.id, people, startMs);
+      await dropHoldRaw(tx, user.id);
+      await tx.commit();
     } catch (e) {
       await tx.rollback().catch(() => {});
       throw e;

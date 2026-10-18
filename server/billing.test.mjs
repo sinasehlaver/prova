@@ -14,7 +14,9 @@ const fx = (n) => readFileSync(new URL(`../fixtures/receipts/${n}`, import.meta.
 const M = currentMonth();
 const NEXT = nextMonth(M);
 const FAR = Array.from({ length: 13 }).reduce((m) => nextMonth(m), M); // current + 13 = one past the browse cap
-const day = (n) => Math.ceil((Date.now() + 2 * H) / H) * H + n * 24 * H;
+// 10:00 Istanbul on day (today + n + 1): always inside the 08-22 window (no reservation may end after 22:00)
+const at10 = (ms) => Math.floor((ms + 3 * H) / (24 * H)) * 24 * H - 3 * H + 10 * H;
+const day = (n) => at10(Date.now() + (n + 1) * 24 * H);
 const J = async (r) => r.json();
 const mk = async (name) => { // fresh member (own sub charge, no bookings)
   const u = await J(await t.fetch("/api/users", { method: "POST", as: t.admin, body: { name } }));
@@ -51,7 +53,6 @@ test("charge snapshot survives a fee change; fees apply from a future month only
   const u = await mk("Snap");
   const before = sub(await bill(u));
   assert.equal(before.amount_try, 1500);
-  await assert.rejects(setFee(t.db, { effectiveFrom: M, subscriptionTry: 9, bookingTry: 9 }), /gelecek/);
   const r = await admin("/fees", { method: "POST", body: { effective_from: NEXT, subscription_try: 2000, booking_try: 600 } });
   assert.equal(r.status, 201);
   assert.equal((await feeFor(t.db, M)).subscription_try, 1500);
@@ -60,12 +61,47 @@ test("charge snapshot survives a fee change; fees apply from a future month only
   await ensureMonth(t.db, u, NEXT);
   const next = (await t.db.execute({ sql: "SELECT amount_try FROM charges WHERE user_id = ? AND month = ?", args: [u.id, NEXT] })).rows[0];
   assert.equal(next.amount_try, 2000);
-  assert.equal((await admin("/fees", { method: "POST", body: { effective_from: M, subscription_try: 1, booking_try: 1 } })).status, 400);
+  assert.equal((await admin("/fees", { method: "POST", body: { effective_from: "2024-12", subscription_try: 50, booking_try: 50 } })).status, 400);
+  assert.equal((await admin("/fees", { method: "POST", body: { effective_from: NEXT, subscription_try: 1510, booking_try: 50 } })).status, 400); // not a multiple of 50
   assert.equal((await admin("/fees", { method: "POST", body: { effective_from: NEXT, subscription_try: 1.5, booking_try: 1 } })).status, 400);
   assert.equal((await t.fetch("/api/admin/fees", { as: t.member })).status, 403);
   // put the fee back so later tests see 500 for a booking in the current month; NEXT row edited in place (same effective_from)
   await admin("/fees", { method: "POST", body: { effective_from: NEXT, subscription_try: 1500, booking_try: 500 } });
   assert.equal((await t.db.execute({ sql: "SELECT COUNT(*) n FROM fees WHERE effective_from = ?", args: [NEXT] })).rows[0].n, 1);
+});
+
+test("setFee any month: re-prices only UNPAID charges, other months untouched", async () => {
+  const u = await mk("Reprice"), p = await mk("RepricePaid"), w = await mk("RepriceWaived");
+  for (const x of [u, p, w]) await ensureMonth(t.db, x, M);
+  const sid = async (x) => (sub(await bill(x))).id;
+  assert.equal((await record(p, { amount: 1500, charges: [await sid(p)] })).status, 201);
+  assert.equal((await admin(`/charges/${await sid(w)}/waive`, { method: "POST", body: {} })).status, 200);
+  const prevFee = await feeFor(t.db, M), nextFee = await feeFor(t.db, NEXT);
+  const r = await admin("/fees", { method: "POST", body: { effective_from: M, subscription_try: 1800, booking_try: 700 } });
+  assert.equal(r.status, 201);
+  assert.ok((await J(r)).repriced >= 1);
+  assert.equal(sub(await bill(u)).amount_try, 1800); // unpaid -> new fee
+  assert.equal(sub(await bill(p)).amount_try, 1500); // paid stays
+  assert.equal(sub(await bill(w)).amount_try, 1500); // waived stays
+  assert.equal((await feeFor(t.db, M)).subscription_try, 1800);
+  assert.equal((await feeFor(t.db, NEXT)).subscription_try, nextFee.subscription_try); // following month unchanged
+  assert.equal((await feeFor(t.db, NEXT)).booking_try, nextFee.booking_try);
+  // past month: only the fee row (+ restore row), no charge there
+  const PAST = "2025-03";
+  assert.equal((await admin("/fees", { method: "POST", body: { effective_from: PAST, subscription_try: 900, booking_try: 100 } })).status, 201);
+  assert.equal((await feeFor(t.db, PAST)).subscription_try, 900);
+  assert.equal((await feeFor(t.db, nextMonth(PAST))).subscription_try, 1500);
+  // booking charge re-priced = people x new fee
+  const bk = await mk("RepriceBook");
+  const start = day(20);
+  const rv = await t.fetch("/api/reservations", { as: bk, method: "POST", body: { start_ms: start, hours: 2, people: 3 } });
+  assert.equal(rv.status, 201);
+  const bm = (await t.db.execute({ sql: "SELECT month FROM charges WHERE user_id = ? AND kind = 'booking'", args: [bk.id] })).rows[0].month;
+  await admin("/fees", { method: "POST", body: { effective_from: bm, subscription_try: 1500, booking_try: 150 } });
+  assert.equal((await t.db.execute({ sql: "SELECT amount_try a FROM charges WHERE user_id = ? AND kind = 'booking'", args: [bk.id] })).rows[0].a, 450);
+  // restore for later tests
+  await admin("/fees", { method: "POST", body: { effective_from: M, subscription_try: prevFee.subscription_try, booking_try: prevFee.booking_try } });
+  await admin("/fees", { method: "POST", body: { effective_from: bm, subscription_try: prevFee.subscription_try, booking_try: prevFee.booking_try } });
 });
 
 test("booking charge: ONE charge on the booker = people x fee, voided on cancel, kalan sums unpaid", async () => {
@@ -700,7 +736,7 @@ test("cumulative debt: unpaid months add up in the payload; part-payment reduces
 
 test("back-filled booking before joined_month: month browsable + payable, booking charge only (no aidat), counted in debt", async () => {
   const u = await mk("Eski Üye Geçmiş");
-  const s = Math.floor(Date.now() / H) * H - 60 * 24 * H; // joined this month, booking ~2 months back
+  const s = at10(Date.now() - 60 * 24 * H); // joined this month, booking ~2 months back
   const PAST = (await J(await t.fetch("/api/holds", { method: "POST", as: u, body: { start_ms: s, hours: 1 } }))) && new Date(s + 3 * H).toISOString().slice(0, 7);
   assert.ok(PAST < u.joined_month);
   const before = await bill(u);

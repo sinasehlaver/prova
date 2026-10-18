@@ -2,13 +2,16 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { makeTestApp } from "./test-helpers.mjs";
 import { setHold, listHolds } from "./lib/holds.mjs";
+import { EARLIEST_MS } from "./lib/tz.mjs";
 
 const H = 3600_000;
 const t = await makeTestApp();
 after(() => t.close());
 
 // each test owns a day, far from reservations.test.mjs (separate DB anyway)
-const day = (n) => Math.ceil((Date.now() + 2 * H) / H) * H + n * 24 * H;
+// 10:00 Istanbul on day (today + n + 1): always inside the 08-22 window (no reservation may end after 22:00)
+const at10 = (ms) => Math.floor((ms + 3 * H) / (24 * H)) * 24 * H - 3 * H + 10 * H;
+const day = (n) => at10(Date.now() + (n + 1) * 24 * H);
 const hold = (as, start_ms, hours = 1) => t.fetch("/api/holds", { method: "POST", as, body: { start_ms, hours } });
 const book = (as, start_ms, hours = 1) => t.fetch("/api/reservations", { method: "POST", as, body: { start_ms, hours } });
 const release = (as) => t.fetch("/api/holds", { method: "DELETE", as });
@@ -60,7 +63,7 @@ test("expiry frees the slot (TTL injectable; expired rows never block)", async (
   const s = day(3);
   // lib level: 50 ms TTL from a fake clock
   const now = Date.now();
-  await setHold(t.db, { userId: t.member.id, startMs: s, hours: 1, maxHours: 4, now, ttlMs: 50 });
+  await setHold(t.db, { userId: t.member.id, startMs: s, hours: 1, now, ttlMs: 50 });
   assert.equal((await listHolds(t.db, t.member2.id, now + 10)).length, 1);
   assert.equal((await listHolds(t.db, t.member2.id, now + 60)).length, 0, "expired -> not listed");
   // HTTP level: age the row in the DB instead of sleeping
@@ -91,9 +94,9 @@ test("one hold per user: a new hold replaces the old; refresh extends; release f
   assert.equal((await release(t.member)).status, 200, "release without a hold is a no-op");
 });
 
-test("hold validation: hour-aligned, not beyond the back-fill limit, 1..max hours", async () => {
+test("hold validation: hour-aligned, not beyond the back-fill limit, must end by 22:00", async () => {
   const s = day(5);
-  for (const body of [{}, { start_ms: s + 1800_000, hours: 1 }, { start_ms: s, hours: 0 }, { start_ms: s, hours: 5 }, { start_ms: s, hours: 1.5 }, { start_ms: Math.floor(Date.now() / H) * H - 200 * 24 * H, hours: 1 }]) {
+  for (const body of [{}, { start_ms: s + 1800_000, hours: 1 }, { start_ms: s, hours: 0 }, { start_ms: s + 12 * H, hours: 1 }, { start_ms: s, hours: 1.5 }, { start_ms: EARLIEST_MS - H, hours: 1 }]) {
     assert.equal((await t.fetch("/api/holds", { method: "POST", as: t.member, body })).status, 400, JSON.stringify(body));
   }
 });

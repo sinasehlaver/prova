@@ -29,3 +29,23 @@
 .pending-block { margin-bottom: var(--s-6); }
 .pending-title { display: flex; align-items: center; gap: var(--s-2); font-size: var(--fs-3); margin: 0 0 var(--s-3); }
 .member.pending { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: linear-gradient(0deg, var(--accent-tint), var(--accent-tint)), var(--surface); }
+
+/* Accent picker: each swatch previews its own colour via the same data-accent token sets as <html> */
+.swatches { display: flex; flex-wrap: wrap; gap: var(--s-3); }
+.swatch {
+  width: 2.25rem; height: 2.25rem; border-radius: 50%; border: 2px solid transparent; padding: 0; cursor: pointer;
+  background: var(--a-d, #ff8a3d); box-shadow: inset 0 0 0 2px var(--surface);
+  transition: transform 120ms var(--ease), border-color var(--dur) var(--ease);
+}
+:root[data-theme="light"] .swatch { background: var(--a-l, #c2410c); }
+@media (prefers-color-scheme: light) { :root:not([data-theme]) .swatch { background: var(--a-l, #c2410c); } }
+.swatch[data-accent="blue"]   { --a-d: #5aa2ff; --a-l: #1d4ed8; }
+.swatch[data-accent="green"]  { --a-d: #34c778; --a-l: #15803d; }
+.swatch[data-accent="purple"] { --a-d: #a78bfa; --a-l: #6d28d9; }
+.swatch[data-accent="pink"]   { --a-d: #f472b6; --a-l: #be185d; }
+.swatch[data-accent="yellow"] { --a-d: #f0c43e; --a-l: #a16207; }
+.swatch[data-accent="gray"]   { --a-d: #a1a1aa; --a-l: #52525b; }
+.swatch:hover { transform: scale(1.08); }
+.swatch:active { transform: scale(0.95); }
+.swatch:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--surface), var(--ring); }
+.swatch[aria-checked="true"] { border-color: var(--text); }

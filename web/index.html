@@ -22,6 +22,8 @@
         try {
           var t = localStorage.getItem("prova.theme");
           if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+          var a = localStorage.getItem("prova.accent");
+          if (a && /^[a-z]+$/.test(a)) document.documentElement.setAttribute("data-accent", a);
         } catch (e) {}
       })();
     </script>

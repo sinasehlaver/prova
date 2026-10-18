@@ -3,13 +3,14 @@ import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "./icons.jsx";
 import Sheet from "./Sheet.jsx";
+import { DatePicker, Select } from "./Controls.jsx";
 import { ErrorState, Skeleton } from "./States.jsx";
 import { D, H, dayStart, fmtDay, fmtLong, fmtShort, fmtTime, fmtWd, hourLabel, weekStart } from "./time.js";
 
 // ponytail: fixed 08:00-24:00 window in the UI (API accepts any whole hour). Make it a setting if a room runs earlier.
-const FROM = 8, TO = 24;
-const WEEKS = 8; // weeks loaded from this week on; the day strip and both navigations stay inside the window
-const PAST_WEEKS = 26; // ...plus this many weeks back (past hours are bookable too: back-filling; server allows MAX_PAST_DAYS=190, caps a range at 400 days)
+const FROM = 8, TO = 22; // no booking ends after 22:00 (noise)
+const WEEKS = 8; // weeks loaded from this week on; navigation stays inside the window
+const LOAD_WEEKS = 8; // data is fetched lazily for the selected week +-LOAD_WEEKS (server caps a range at 400 days); the floor comes from /reservations/config (earliest_ms)
 const VIEW_KEY = "prova.calview";
 const POLL_MS = 12_000; // bookings + soft holds refresh
 
@@ -35,7 +36,7 @@ const TOUCH_ARM_MS = 220, MOVE_CANCEL_PX = 10;
 /** Hour grid for 1 day (phone) or 7 days (wide). Booked blocks span rows; free slots are buttons.
  *  onSelect(day, hour, hours) fires for both a plain tap/click (hours=1) and a drag spanning multiple free hours. */
 // readOnly (bootstrap/observer admin, or a 'listener' member): free hours render as plain "Boş" cells, not selectable.
-function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes, readOnly = false }) {
+function Grid({ days, res, holds, now, meId, onSelect, onRes, readOnly = false }) {
   const multi = days.length > 1;
   const cells = [];
   const [drag, setDrag] = useState(null); // { day, h0, hours } — visual span while a drag is in progress
@@ -54,14 +55,14 @@ function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes, readOnly
     if (curH === startH) return { h0: startH, hours: 1 };
     if (curH > startH) {
       let n = 1;
-      for (let h = startH + 1; h < TO && h <= curH && n < maxHours; h++) {
+      for (let h = startH + 1; h < TO && h <= curH; h++) {
         if (!isFreeHour(res, holds, now, day, h)) break;
         n++;
       }
       return { h0: startH, hours: n };
     }
     let n = 1, h0 = startH;
-    for (let h = startH - 1; h >= FROM && h >= curH && n < maxHours; h--) {
+    for (let h = startH - 1; h >= FROM && h >= curH; h--) {
       if (!isFreeHour(res, holds, now, day, h)) break;
       h0 = h; n++;
     }
@@ -169,8 +170,11 @@ function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes, readOnly
   });
   return (
     <div className={"cal-grid cal-body " + (multi ? "cal-week" : "cal-day")} style={{ "--cols": days.length }}>
-      {Array.from({ length: TO - FROM }, (_, i) => (
-        <div key={i} className="cal-hour num" style={{ gridColumn: 1, gridRow: i + 2 }}>{hourLabel(FROM + i)}</div>
+      {Array.from({ length: TO - FROM + 1 }, (_, i) => (
+        <div key={i} className={"cal-hour num" + (i === TO - FROM ? " end" : "")} style={{ gridColumn: 1, gridRow: Math.min(i, TO - FROM - 1) + 2 }} aria-hidden="true">{hourLabel(FROM + i)}</div>
+      ))}
+      {Array.from({ length: TO - FROM + 1 }, (_, i) => (
+        <div key={`l${i}`} className={"cal-line" + (i === TO - FROM ? " end" : "")} style={{ gridColumn: "2 / -1", gridRow: Math.min(i, TO - FROM - 1) + 2 }} aria-hidden="true" />
       ))}
       {cells}
     </div>
@@ -178,14 +182,13 @@ function Grid({ days, res, holds, now, meId, maxHours, onSelect, onRes, readOnly
 }
 
 // Week-view weekday/date header row: lives in the sticky block (Calendar), columns mirror Grid's.
-function DayHeads({ days, now, onPick }) {
+function DayHeads({ days, now }) {
   return (
     <div className="cal-grid cal-heads" style={{ "--cols": days.length }}>
       {days.map((d, i) => (
-        <button key={d} type="button" className={"cal-head" + (dayStart(now) === d ? " today" : "")} style={{ gridColumn: i + 2 }}
-          onClick={() => onPick(d)} aria-label={fmtLong(d)}>
+        <div key={d} className={"cal-head" + (dayStart(now) === d ? " today" : "")} style={{ gridColumn: i + 2 }} aria-label={fmtLong(d)}>
           <span>{fmtWd(d)}</span><b className="num">{fmtDay(d)}</b>
-        </button>
+        </div>
       ))}
     </div>
   );
@@ -193,26 +196,40 @@ function DayHeads({ days, now, onPick }) {
 
 const HOLD_REFRESH_MS =45_000; // server TTL is ~2 min: keep the hold alive while the sheet stays open
 
-function NewSheet({ day, hour, hours: initialHours, res, holds, now, maxHours, maxPeople, onClose, onDone }) {
+const isoDay = (ms) => new Date(ms + 3 * H).toISOString().slice(0, 10); // Istanbul date of a day start
+const fromIso = (v) => dayStart(Date.parse(v + "T12:00:00+03:00"));
+
+// edit = an existing own reservation: same sheet, prefilled, its own hours count as free, submit PATCHes it (used by MyReservations).
+export function NewSheet({ day: day0, hour, hours: initialHours, res: parentRes, holds, now, maxPeople, minDay, maxDay, covers, edit = null, onClose, onDone }) {
+  const [day, setDay] = useState(day0);
+  const [own, setOwn] = useState(null); // { day, rows } bookings fetched for a picked day outside the calendar's loaded window
+  const raw = covers(day) ? parentRes : own?.day === day ? own.rows : null; // null = still loading that day
+  const res = edit && raw ? raw.filter((x) => x.id !== edit.id) : raw;
+  useEffect(() => {
+    if (covers(day)) return;
+    let stop = false;
+    api("GET", `/reservations?from=${day}&to=${day + D}`).then((rows) => { if (!stop) setOwn({ day, rows }); }, () => { if (!stop) setOwn({ day, rows: [] }); });
+    return () => { stop = true; };
+  }, [day]); // eslint-disable-line react-hooks/exhaustive-deps
   const [h0, setH0] = useState(hour);
   const [hours, setHours] = useState(Number.isInteger(initialHours) && initialHours >= 1 ? initialHours : 1);
-  const [note, setNote] = useState("");
-  const [people, setPeople] = useState(1);
+  const [note, setNote] = useState(edit?.note ?? "");
+  const [people, setPeople] = useState(edit?.people ?? 1);
   const [err, setErr] = useState("");
   const [holdErr, setHoldErr] = useState(""); // someone else got these hours first (409 on the hold)
   const [busy, setBusy] = useState(false);
   const closed = useRef(false);
 
-  const free = (h) => isFreeHour(res, holds, now, day, h);
+  const free = (h) => res !== null && isFreeHour(res, holds, now, day, h);
   const starts = useMemo(() => Array.from({ length: TO - FROM }, (_, i) => FROM + i).filter(free), [res, holds, now]); // eslint-disable-line react-hooks/exhaustive-deps
-  const room = (h) => { let n = 0; while (n < maxHours && h + n < TO && free(h + n)) n++; return n; };
+  const room = (h) => { let n = 0; while (h + n < TO && free(h + n)) n++; return n; };
   const start = starts.includes(h0) ? h0 : starts[0];
   const fit = Math.min(hours, room(start) || 1);
 
   // Soft hold on the picked hours while the sheet is open (others see "Rezerve ediliyor"); re-sent on every change and
   // every 45 s; released on close. A 409 means another member holds/booked them first -> friendly message + grid refresh.
   useEffect(() => {
-    if (start === undefined) return;
+    if (edit || start === undefined || res === null) return; // edit: the server's overlap check is enough (own hours would clash with the hold)
     let stop = false;
     const put = () => api("POST", "/holds", { start_ms: day + start * H, hours: fit }).then(
       () => { if (closed.current) api("DELETE", "/holds").catch(() => {}); else if (!stop) setHoldErr(""); },
@@ -232,33 +249,31 @@ function NewSheet({ day, hour, hours: initialHours, res, holds, now, maxHours, m
     e.preventDefault();
     setBusy(true); setErr("");
     try {
-      await api("POST", "/reservations", { start_ms: day + start * H, hours: fit, note, people });
-      onDone(tr.cal.booked);
+      const body = { start_ms: day + start * H, hours: fit, note, people };
+      if (edit) await api("PATCH", `/reservations/${edit.id}`, body); else await api("POST", "/reservations", body);
+      onDone(edit ? tr.cal.edited : tr.cal.booked);
     } catch (x) { setErr(x.message || tr.err.generic); onDone(null); } finally { setBusy(false); }
   };
 
   return (
-    <Sheet title={tr.cal.newTitle} onClose={onClose}>
-      {starts.length === 0 ? <p className="muted">{tr.cal.noFree}</p> : (
+    <Sheet title={edit ? tr.cal.editTitle : tr.cal.newTitle} onClose={onClose}>
+      <label className="field">
+        <span>{tr.cal.date}</span>
+        <DatePicker className="date-pick" value={isoDay(day)} min={isoDay(minDay)} max={isoDay(maxDay)}
+          onChange={(v) => { const d = fromIso(v); if (d >= minDay && d <= maxDay) setDay(d); }} />
+      </label>
+      <p className="sheet-sub">{fmtLong(day)}</p>
+      {res === null ? <p className="muted">{tr.cal.loadingDay}</p> : starts.length === 0 ? <p className="muted">{tr.cal.noFree}</p> : (
         <form className="sheet-form" onSubmit={submit}>
-          <p className="sheet-sub">{fmtLong(day)}</p>
           <label className="field">
             <span>{tr.cal.start}</span>
-            <select data-autofocus value={start} onChange={(e) => setH0(Number(e.target.value))}>
-              {starts.map((h) => <option key={h} value={h}>{hourLabel(h)}</option>)}
-            </select>
+            <Select autofocus value={start} onChange={setH0} options={starts.map((h) => ({ value: h, label: hourLabel(h) }))} />
           </label>
-          <div className="field" role="radiogroup" aria-label={tr.cal.duration}>
+          <label className="field">
             <span>{tr.cal.duration}</span>
-            <div className="seg">
-              {Array.from({ length: maxHours }, (_, i) => i + 1).map((n) => (
-                <button type="button" key={n} role="radio" aria-checked={fit === n} disabled={n > room(start)} onClick={() => setHours(n)}>
-                  {tr.cal.hours(n)}
-                </button>
-              ))}
-            </div>
+            <Select value={fit} onChange={setHours} options={Array.from({ length: room(start) || 1 }, (_, i) => i + 1).map((n) => ({ value: n, label: tr.cal.hours(n) }))} />
             <span className="muted small num">{fmtTime(day + start * H)} – {fmtTime(day + (start + fit) * H)}</span>
-          </div>
+          </label>
           <label className="field">
             <span>{tr.cal.note}</span>
             <input value={note} maxLength={200} placeholder={tr.cal.notePh} onChange={(e) => setNote(e.target.value)} />
@@ -276,7 +291,7 @@ function NewSheet({ day, hour, hours: initialHours, res, holds, now, maxHours, m
           {(err || holdErr) && <p className="notice bad" role="alert">{err || holdErr}</p>}
           <div className="row end">
             <button type="button" className="btn ghost" onClick={onClose}>{tr.cal.cancel}</button>
-            <button className="btn primary" disabled={busy || !!holdErr}>{tr.cal.submit}</button>
+            <button className="btn primary" disabled={busy || !!holdErr}>{edit ? tr.cal.save : tr.cal.submit}</button>
           </div>
         </form>
       )}
@@ -353,30 +368,32 @@ export default function Calendar({ me }) {
   const wide = useWide();
   const [now, setNow] = useState(Date.now());
   const today = dayStart(now);
-  const [sel, setSel] = useState(today); // anchor day: the shown day (Gün) or any day of the shown week (Hafta)
-  const [pref, setPref] = useState(() => { try { const v = localStorage.getItem(VIEW_KEY); return v === "day" || v === "week" ? v : null; } catch { return null; } });
+  const [sel, setSel] = useState(today); // anchor day: first day of the 3-day window, or any day of the shown week (7 gün)
+  const [pref, setPref] = useState(() => { try { const v = localStorage.getItem(VIEW_KEY); return v === "3" || v === "7" ? v : null; } catch { return null; } });
   const [res, setRes] = useState(null); // null = loading
   const [holds, setHolds] = useState([]); // other members' live soft holds
   const [loadErr, setLoadErr] = useState("");
-  const [maxHours, setMaxHours] = useState(4);
   const [maxPeople, setMaxPeople] = useState(20);
+  const [floor, setFloor] = useState(null); // earliest bookable day (start of day, ms); null until /reservations/config answers
   const [sheet, setSheet] = useState(null);
   const [toast, setToast] = useState("");
   const timer = useRef();
-  const stripRef = useRef();
 
   const thisWeek = weekStart(dayStart(Date.now()));
-  const from = thisWeek - PAST_WEEKS * 7 * D;
+  const last = thisWeek + WEEKS * 7 * D - D; // last navigable day
+  const from = floor ?? thisWeek; // first navigable day
+  const wk = weekStart(sel);
+  const loadFrom = Math.max(from, wk - LOAD_WEEKS * 7 * D), loadTo = Math.min(last + D, wk + (LOAD_WEEKS + 1) * 7 * D);
   const load = useCallback(
-    (quiet) => api("GET", `/reservations?from=${from}&to=${thisWeek + WEEKS * 7 * D}`).then((r) => { setRes(r); setLoadErr(""); }, (e) => { if (!quiet) { setLoadErr(e.message || tr.err.load); say(e.message); } }),
-    [from, thisWeek] // eslint-disable-line react-hooks/exhaustive-deps
+    (quiet) => floor == null ? Promise.resolve() : api("GET", `/reservations?from=${loadFrom}&to=${loadTo}`).then((r) => { setRes(r); setLoadErr(""); }, (e) => { if (!quiet) { setLoadErr(e.message || tr.err.load); say(e.message); } }),
+    [floor, loadFrom, loadTo] // eslint-disable-line react-hooks/exhaustive-deps
   );
   const loadHolds = useCallback(() => api("GET", "/holds").then(setHolds, () => {}), []);
   const say = (m) => { setToast(m); clearTimeout(timer.current); timer.current = setTimeout(() => setToast(""), 2400); };
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    api("GET", "/reservations/config").then((c) => { setMaxHours(c.max_hours); setMaxPeople(c.max_people); }, () => {});
+    api("GET", "/reservations/config").then((c) => { setMaxPeople(c.max_people); setFloor(dayStart(c.earliest_ms)); }, () => setFloor(thisWeek));
     const t = setInterval(() => setNow(Date.now()), 60_000);
     return () => { clearInterval(t); clearTimeout(timer.current); };
   }, []);
@@ -393,32 +410,25 @@ export default function Calendar({ me }) {
   const liveHolds = holds.filter((k) => k.expires_at > now);
 
   const done = (msg) => { load(); loadHolds(); if (msg) { setSheet(null); say(msg); } };
-  // Gün / Hafta: an explicit choice is remembered (localStorage); until then phones open on Gün and wide screens on Hafta.
-  const view = pref ?? (wide ? "week" : "day");
+  // 3 gün / 7 gün: an explicit choice is remembered (localStorage); until then phones open on 3 gün and wide screens on 7 gün.
+  const view = pref ?? (wide ? "7" : "3");
+  const n = view === "7" ? 7 : 3;
   const setView = (v) => {
     setPref(v);
     try { localStorage.setItem(VIEW_KEY, v); } catch { /* private mode: choice lasts for this visit only */ }
-    // keep the anchor sensible: Hafta -> Gün lands on today when it is inside the week, else that week's first day
-    if (v === "day" && weekStart(sel) === weekStart(today)) setSel(today);
-    else if (v === "day") setSel(weekStart(sel));
   };
-  const last = thisWeek + WEEKS * 7 * D - D; // last loaded day; `from` is the first
-  const strip = Array.from({ length: Math.round((last - from) / D) + 1 }, (_, i) => from + i * D);
-  const wk = weekStart(sel);
-  const days = view === "week" ? Array.from({ length: 7 }, (_, i) => wk + i * D) : [sel];
-  const shown = view === "week" ? wk : sel;
-  const step = view === "week" ? 7 * D : D;
-  const prevOk = view === "week" ? wk > from : sel > from;
-  const nextOk = view === "week" ? wk + 7 * D <= last : sel < last;
-  const go = (dir) => setSel(Math.min(last, Math.max(from, sel + dir * step)));
-  const atToday = view === "week" ? wk === weekStart(today) : sel === today;
+  const shown = n === 7 ? wk : sel; // first day of the window: 7 gün = the Monday-based week, 3 gün starts on the anchor day
+  const days = Array.from({ length: n }, (_, i) => shown + i * D);
+  const prevOk = shown > from;
+  const nextOk = shown + n * D <= last;
+  const go = (dir) => setSel(Math.min(last - (n - 1) * D, Math.max(from, sel + dir * n * D)));
+  const atToday = n === 7 ? wk === weekStart(today) : sel === today;
   const firstFree = () => { const d = Math.max(today, shown); for (let h = FROM; h < TO; h++) if (d + h * H > now) return h; return FROM; };
-  useEffect(() => { stripRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ inline: "center", block: "nearest" }); }, [sel, view]);
 
   const readOnly = !!me.observer || me.role === "listener";
 
   return (
-    <section className="cal">
+    <section className="cal cal-wk">
       {me.observer && <p className="notice observer-note" role="note">{tr.cal.observer}</p>}
       {me.role === "listener" && <p className="notice observer-note" role="note">{tr.cal.listener}</p>}
 
@@ -426,49 +436,42 @@ export default function Calendar({ me }) {
       <div className="cal-sticky">
         <div className="page-head">
           <h2>{tr.cal.title}</h2>
-          {!readOnly && (
-            <button className="btn primary" onClick={() => setSheet({ kind: "new", day: Math.max(today, view === "week" ? wk : sel), hour: firstFree() })}>
-              <PlusIcon width="18" height="18" />{tr.cal.book}
-            </button>
-          )}
-        </div>
-
-        <div className="seg view-toggle" role="radiogroup" aria-label={tr.cal.viewLabel}>
-          {[["day", tr.cal.viewDay], ["week", tr.cal.viewWeek]].map(([v, label]) => (
-            <button key={v} type="button" role="radio" aria-checked={view === v} onClick={() => setView(v)}>{label}</button>
-          ))}
+          <div className="cal-range">
+            <button className="btn sm ghost" onClick={() => setSel(today)} disabled={atToday}>{tr.cal.today}</button>
+            <strong className="num">{`${fmtShort(shown)} – ${fmtShort(shown + (n - 1) * D)}`}</strong>
+          </div>
+          <div className="cal-side">
+            <div className="seg sm view-toggle" role="radiogroup" aria-label={tr.cal.viewLabel}>
+              {[["3", tr.cal.view3], ["7", tr.cal.view7]].map(([v, label]) => (
+                <button key={v} type="button" role="radio" aria-checked={view === v} onClick={() => setView(v)}>{label}</button>
+              ))}
+            </div>
+            {!readOnly && (
+              <button className="btn primary" onClick={() => setSheet({ kind: "new", day: Math.max(today, shown), hour: firstFree() })}>
+                <PlusIcon width="18" height="18" />{tr.cal.book}
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="week-nav">
-          <button className="icon-btn" onClick={() => go(-1)} disabled={!prevOk} aria-label={view === "week" ? tr.cal.weekPrev : tr.cal.dayPrev}><ChevronLeftIcon /></button>
-          <div className="week-mid">
-            <strong className="num">{view === "week" ? `${fmtShort(wk)} – ${fmtShort(wk + 6 * D)}` : fmtLong(sel)}</strong>
-            {!atToday && <button className="btn sm ghost" onClick={() => setSel(today)}>{tr.cal.today}</button>}
-          </div>
-          <button className="icon-btn" onClick={() => go(1)} disabled={!nextOk} aria-label={view === "week" ? tr.cal.weekNext : tr.cal.dayNext}><ChevronRightIcon /></button>
+          <button className="icon-btn" onClick={() => go(-1)} disabled={!prevOk} aria-label={tr.cal.prev}><ChevronLeftIcon /></button>
+          <DayHeads days={days} now={now} />
+          <button className="icon-btn" onClick={() => go(1)} disabled={!nextOk} aria-label={tr.cal.next}><ChevronRightIcon /></button>
         </div>
-        {view === "week" && <DayHeads days={days} now={now} onPick={(d) => { setPref("day"); setSel(d); }} />}
-      {view === "day" && (
-        <div className="strip" role="tablist" aria-label={tr.cal.days} ref={stripRef}>
-          {strip.map((d) => (
-            <button key={d} role="tab" aria-selected={d === sel} className={"strip-day" + (d === today ? " today" : "")} onClick={() => setSel(d)}>
-              <span>{d === today ? tr.cal.today : fmtWd(d)}</span><b className="num">{fmtDay(d)}</b>
-            </button>
-          ))}
-        </div>
-      )}
       </div>
 
       {res ? (
         <div className="card cal-card">
-          <Grid days={days} res={res} holds={liveHolds} now={now} meId={me.id} maxHours={maxHours} readOnly={readOnly}
+          <Grid days={days} res={res} holds={liveHolds} now={now} meId={me.id} readOnly={readOnly}
             onSelect={(day, hour, hours) => setSheet({ kind: "new", day, hour, hours })}
             onRes={(r) => setSheet({ kind: "view", r })} />
         </div>
       ) : loadErr ? <ErrorState message={loadErr} onRetry={() => load()} /> : <Skeleton rows={4} />}
 
       {sheet?.kind === "new" && (
-        <NewSheet day={sheet.day} hour={sheet.hour} hours={sheet.hours} res={res || []} holds={liveHolds} now={now} maxHours={maxHours} maxPeople={maxPeople}
+        <NewSheet day={sheet.day} hour={sheet.hour} hours={sheet.hours} res={res || []} holds={liveHolds} now={now} maxPeople={maxPeople}
+          minDay={from} maxDay={last} covers={(d) => d >= loadFrom && d < loadTo}
           onClose={() => setSheet(null)} onDone={done} />
       )}
       {sheet?.kind === "view" && <ViewSheet r={sheet.r} now={now} me={me} onClose={() => setSheet(null)} onDone={done} />}

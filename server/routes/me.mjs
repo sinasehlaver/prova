@@ -2,7 +2,8 @@ import { Router } from "express";
 import { clearSessionCookie, isBootstrap, newToken, requireAuth, requireSession, setSessionCookie, hashPassword, verifyPassword, normEmail } from "../lib/auth.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 
-export const publicUser = ({ id, name, phone, role, active, status, joined_month, email }) => ({ id, name, phone, role, active: !!active, status: status ?? "approved", joined_month, email });
+export const ACCENTS = ["brick", "blue", "green", "purple", "pink", "yellow", "gray"];
+export const publicUser = ({ id, name, phone, role, active, status, joined_month, email, accent }) => ({ id, name, phone, role, active: !!active, status: status ?? "approved", joined_month, email, accent: ACCENTS.includes(accent) ? accent : "brick" });
 
 const SIGNUP_WINDOW = 10 * 60_000, SIGNUP_PER_IP = 5, MAX_PENDING = 50;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -92,8 +93,13 @@ export default ({ db }) => {
   r.patch("/me", requireAuth, async (req, res) => {
     const c = cleanProfile(req.body);
     if (c.error) return res.status(400).json({ error: c.error });
-    await db.execute({ sql: "UPDATE users SET name = ?, phone = ? WHERE id = ?", args: [c.name, c.phone, req.user.id] });
-    res.json(publicUser({ ...req.user, name: c.name, phone: c.phone }));
+    let accent = req.user.accent;
+    if (req.body?.accent !== undefined) {
+      if (!ACCENTS.includes(req.body.accent)) return res.status(400).json({ error: "Geçersiz renk" });
+      accent = req.body.accent;
+    }
+    await db.execute({ sql: "UPDATE users SET name = ?, phone = ?, accent = ? WHERE id = ?", args: [c.name, c.phone, accent, req.user.id] });
+    res.json(publicUser({ ...req.user, name: c.name, phone: c.phone, accent }));
   });
 
   // Change own password (requires current password)

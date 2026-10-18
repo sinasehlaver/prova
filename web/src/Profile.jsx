@@ -4,6 +4,8 @@ import { tr } from "./tr.js";
 import Sheet from "./Sheet.jsx";
 import "./profile.css";
 
+const ACCENTS = ["brick", "blue", "green", "purple", "pink", "yellow", "gray"];
+
 const monthLabel = (ym) => {
   const [y, m] = String(ym || "").split("-");
   return tr.profile.months[Number(m) - 1] ? `${tr.profile.months[Number(m) - 1]} ${y}` : ym;
@@ -13,15 +15,16 @@ const monthLabel = (ym) => {
 export default function Profile({ me, onClose, onSaved, onLogout }) {
   const [name, setName] = useState(me.name);
   const [phone, setPhone] = useState(me.phone || "");
+  const [accent, setAccent] = useState(me.accent || "brick");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
-  const dirty = name.trim() !== me.name || phone.trim() !== (me.phone || "");
+  const dirty = name.trim() !== me.name || phone.trim() !== (me.phone || "") || accent !== (me.accent || "brick");
 
   const save = async (e) => {
     e.preventDefault();
     setBusy(true); setError(""); setSaved(false);
-    try { onSaved(await api("PATCH", "/me", { name, phone })); setSaved(true); }
+    try { onSaved(await api("PATCH", "/me", { name, phone, accent })); setSaved(true); }
     catch (err) { setError(err.message || tr.err.generic); }
     finally { setBusy(false); }
   };
@@ -42,6 +45,15 @@ export default function Profile({ me, onClose, onSaved, onLogout }) {
           <span>{tr.profile.phone} <span className="muted small">({tr.profile.phoneHint})</span></span>
           <input inputMode="tel" maxLength={30} value={phone} onChange={(e) => { setPhone(e.target.value); setSaved(false); }} />
         </label>
+        <div className="field" role="radiogroup" aria-label={tr.profile.accent}>
+          <span>{tr.profile.accent}</span>
+          <div className="swatches">
+            {ACCENTS.map((a) => (
+              <button key={a} type="button" role="radio" aria-checked={accent === a} aria-label={tr.profile.accents[a]} title={tr.profile.accents[a]}
+                className="swatch" data-accent={a} onClick={() => { setAccent(a); setSaved(false); }} />
+            ))}
+          </div>
+        </div>
         <dl className="profile-facts">
           <div><dt>{tr.profile.role}</dt><dd>{me.role === "admin" ? tr.profile.roleAdmin : me.role === "listener" ? tr.profile.roleListener : tr.profile.roleMember}</dd></div>
           <div><dt>{tr.profile.joined}</dt><dd>{monthLabel(me.joined_month)}</dd></div>

@@ -4,6 +4,7 @@
 // Writes go through serial() like every other write; the `*Raw` helpers take a tx and never lock (createReservation
 // calls them inside its own serial() - never nest serial).
 import { serial } from "./serial.mjs";
+import { CURFEW_MSG, EARLIEST_DATE, EARLIEST_MS, endsByCurfew } from "./tz.mjs";
 
 export const HOUR = 3600_000;
 export const HOLD_TTL_MS = 120_000;
@@ -40,17 +41,15 @@ export async function listHolds(db, userId, now = Date.now()) {
  * Create or refresh the caller's hold on [startMs, startMs + hours h). 400 validation, 409 when a booking or another
  * user's live hold overlaps. Returns { start_ms, end_ms, expires_at }.
  */
-/** Past hours are bookable too (back-filling a session that happened unbooked), up to this far back. Covers the
- *  web calendar's load window (26 weeks back from this week's start). */
-export const MAX_PAST_DAYS = 190;
-export const pastLimit = (now) => now - MAX_PAST_DAYS * 86_400_000;
+/** Past hours are bookable too (back-filling a session that happened unbooked), back to EARLIEST_MS (lib/tz.mjs). */
 
-export function setHold(db, { userId, startMs, hours, maxHours, now = Date.now(), ttlMs = holdTtl() }) {
+export function setHold(db, { userId, startMs, hours, now = Date.now(), ttlMs = holdTtl() }) {
   return serial(async () => {
     if (!Number.isSafeInteger(startMs) || startMs % HOUR !== 0) throw fail(400, "Başlangıç tam saat olmalı");
-    if (!Number.isInteger(hours) || hours < 1 || hours > maxHours) throw fail(400, `1-${maxHours} saat seçmelisin`);
-    if (startMs < pastLimit(now)) throw fail(400, `En fazla ${MAX_PAST_DAYS} gün geriye gidilebilir`);
+    if (!Number.isInteger(hours) || hours < 1) throw fail(400, "En az 1 saat seçmelisin");
+    if (startMs < EARLIEST_MS) throw fail(400, `En erken ${EARLIEST_DATE} tarihine gidilebilir`);
     const endMs = startMs + hours * HOUR;
+    if (!endsByCurfew(startMs, endMs)) throw fail(400, CURFEW_MSG);
     const tx = await db.transaction("write");
     try {
       await tx.execute({ sql: "DELETE FROM slot_holds WHERE expires_at <= ?", args: [now] });
