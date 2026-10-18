@@ -320,10 +320,19 @@ try {
   await page.waitForSelector(".fee-now");
   await page.screenshot({ path: `${SHOTS}/admin-fees.png`, fullPage: true });
   if (await page.locator("form.card.form h3:has-text('Ayın ücretini değiştir')").count()) throw new Error("fees: static pane still inline");
-  await page.click(".plain-list li >> nth=0 >> button:has-text('Düzenle')");
+  await page.click(".plain-list li.fee-row >> nth=0 >> button:has-text('Düzenle')");
   await page.waitForSelector(".sheet input[type=number]");
   await page.keyboard.press("Escape");
   await page.waitForSelector(".sheet", { state: "detached" });
+  // bulk fee edit: tick two months, bar shows, sheet opens with both listed
+  await page.check(".plain-list li.fee-row input[type=checkbox] >> nth=1");
+  await page.check(".plain-list li.fee-row input[type=checkbox] >> nth=2");
+  await page.waitForSelector(".fee-bulk");
+  await page.click(".fee-bulk .btn.primary");
+  await page.waitForSelector(".sheet input[type=number]");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".sheet", { state: "detached" });
+  await page.click(".fee-bulk .btn:not(.primary)");
   await page.click(".subtabs button:has-text('Ekonomi')");
   await page.waitForSelector(".eco-chart svg[role=img]");
   await page.waitForSelector(".eco-sug .eco-headline");

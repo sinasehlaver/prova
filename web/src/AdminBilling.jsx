@@ -486,6 +486,9 @@ export function Fees() {
   const [fees, setFees] = useState(null);
   const [form, setForm] = useState({ effective_from: nextOf(nowMonth()), subscription_try: "", booking_try: "" });
   const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState(() => new Set()); // months ticked for a bulk edit
+  const [bulk, setBulk] = useState(null); // { subscription_try, booking_try } while the bulk sheet is open; blank = keep each month's own value
+  const [openYears, setOpenYears] = useState(() => new Set([nowMonth().slice(0, 4)])); // current year open, the rest collapsed
   const [say, toast] = useToast();
   const [loadErr, setLoadErr] = useState("");
   const loadFees = () => { setLoadErr(""); api("GET", "/admin/fees").then(setFees, (e) => setLoadErr(e.message || tr.err.load)); };
@@ -495,6 +498,8 @@ export function Fees() {
   const cur = feeOf(now);
   const months = []; // 2025-01 .. current+12, newest first
   if (fees) { let m = now; for (let i = 0; i < 12; i++) m = nextOf(m); for (; m >= "2025-01"; m = prevOf(m)) months.push(m); }
+  const years = [...new Set(months.map((m) => m.slice(0, 4)))];
+  const toggleYear = (y) => setOpenYears((s) => { const n = new Set(s); n.has(y) ? n.delete(y) : n.add(y); return n; });
   const pick = (m) => { const f = feeOf(m); if (f) setForm({ effective_from: m, subscription_try: f.subscription_try, booking_try: f.booking_try }); };
   const openFor = (m) => { const f = feeOf(m); setForm({ effective_from: m, subscription_try: f ? f.subscription_try : "", booking_try: f ? f.booking_try : "" }); setOpen(true); };
   const save = async (e) => {
@@ -505,6 +510,24 @@ export function Fees() {
       setOpen(false);
       say(res.repriced ? `${A.feesRepriced} ${res.repriced}` : A.feesSaved);
     } catch (err) { say(err.message); }
+  };
+  const togglePick = (m) => setPicked((p) => { const n = new Set(p); n.has(m) ? n.delete(m) : n.add(m); return n; });
+  const saveBulk = async (e) => {
+    e.preventDefault();
+    const list = [...picked].sort(); // oldest first
+    let done = 0, repriced = 0;
+    try {
+      for (const m of list) {
+        const f = feeOf(m);
+        const sub = bulk.subscription_try === "" ? f?.subscription_try : Number(bulk.subscription_try);
+        const book = bulk.booking_try === "" ? f?.booking_try : Number(bulk.booking_try);
+        if (sub == null || book == null) throw new Error(`${monthLabel(m)}: ${A.feesBulkNeed}`);
+        const res = await api("POST", "/admin/fees", { effective_from: m, subscription_try: sub, booking_try: book });
+        setFees(res.fees); repriced += res.repriced || 0; done++;
+      }
+      setBulk(null); setPicked(new Set());
+      say(`${A.feesBulkDone(done)}${repriced ? ` · ${A.feesRepriced} ${repriced}` : ""}`);
+    } catch (err) { loadFees(); say(done ? `${A.feesBulkPartial(done, list.length)} ${err.message}` : err.message); }
   };
   return (
     <section>
@@ -523,6 +546,19 @@ export function Fees() {
           </form>
         </Sheet>
       )}
+      {bulk && (
+        <Sheet title={A.feesBulkTitle(picked.size)} onClose={() => setBulk(null)}>
+          <form className="form" onSubmit={saveBulk}>
+            <p className="hint">{[...picked].sort().map(monthLabel).join(", ")}</p>
+            <div className="filters" style={{ marginBottom: 0 }}>
+              <label className="field"><span>{A.feesSub}</span><input type="number" min="0" step="50" data-autofocus value={bulk.subscription_try} onChange={(e) => setBulk({ ...bulk, subscription_try: e.target.value })} /></label>
+              <label className="field"><span>{A.feesBook}</span><input type="number" min="0" step="50" value={bulk.booking_try} onChange={(e) => setBulk({ ...bulk, booking_try: e.target.value })} /></label>
+            </div>
+            <p className="hint">{A.feesBulkNote}</p>
+            <div className="row end"><button className="btn primary" disabled={bulk.subscription_try === "" && bulk.booking_try === ""}>{A.feesSave}</button></div>
+          </form>
+        </Sheet>
+      )}
       {cur && (
         <div className="card fee-now" aria-label={A.feesNow}>
           <div><small>{A.feesSub}</small><b className="amount">{fmtTRY(cur.subscription_try)}</b></div>
@@ -532,14 +568,38 @@ export function Fees() {
       {fees && (
         <>
           <h3 className="sec-title">{A.feesHistory}</h3>
+          {picked.size > 0 && (
+            <div className="card fee-bulk" role="status">
+              <b>{A.feesPicked(picked.size)}</b>
+              <button type="button" className="btn" onClick={() => setPicked(new Set())}>{A.feesClear}</button>
+              <button type="button" className="btn primary" onClick={() => setBulk({ subscription_try: "", booking_try: "" })}>{A.feesBulkEdit}</button>
+            </div>
+          )}
           <ul className="card plain-list">
-            {months.map((m) => { const x = feeOf(m); return (
-              <li key={m}>
-                <span>{monthLabel(m)}</span>
-                <span className="num">{x ? `${fmtTRY(x.subscription_try)} · ${fmtTRY(x.booking_try)}` : "—"}</span>
-                <button type="button" className="btn" onClick={() => openFor(m)}>{A.feesEdit}</button>
-              </li>
-            ); })}
+            <li className="fee-all">
+              <label className="check"><input type="checkbox" checked={picked.size === months.length} onChange={(e) => setPicked(e.target.checked ? new Set(months) : new Set())} /><span>{A.feesAll}</span></label>
+            </li>
+            {years.map((y) => {
+              const ms = months.filter((m) => m.startsWith(y));
+              const n = ms.filter((m) => picked.has(m)).length;
+              const isOpen = openYears.has(y);
+              return [
+                <li key={y} className="fee-year">
+                  <label className="check"><input type="checkbox" aria-label={y} checked={n === ms.length} ref={(el) => { if (el) el.indeterminate = n > 0 && n < ms.length; }} onChange={(e) => setPicked((p) => { const s = new Set(p); ms.forEach((m) => e.target.checked ? s.add(m) : s.delete(m)); return s; })} /></label>
+                  <button type="button" className="fee-year-toggle" aria-expanded={isOpen} onClick={() => toggleYear(y)}>
+                    <svg className="mr-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" style={{ transform: isOpen ? "rotate(90deg)" : undefined }}><path d="M9 6l6 6-6 6" /></svg>
+                    <b>{y}</b>{n > 0 && <small>{A.feesPicked(n)}</small>}
+                  </button>
+                </li>,
+                ...(isOpen ? ms.map((m) => { const x = feeOf(m); return (
+                  <li key={m} className="fee-row">
+                    <label className="check"><input type="checkbox" aria-label={monthLabel(m)} checked={picked.has(m)} onChange={() => togglePick(m)} /><span>{monthLabel(m)}</span></label>
+                    <span className="num">{x ? `${fmtTRY(x.subscription_try)} · ${fmtTRY(x.booking_try)}` : "—"}</span>
+                    <button type="button" className="btn" onClick={() => openFor(m)}>{A.feesEdit}</button>
+                  </li>
+                ); }) : []),
+              ];
+            })}
           </ul>
         </>
       )}

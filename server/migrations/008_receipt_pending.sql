@@ -5,6 +5,10 @@
 -- 'pending' rows are excluded from every money calculation by construction: COVERED_SQL / outstandingOverview only
 -- ever sum over status='ok', and a pending row starts with no receipt_charges rows at all. An admin turns it into
 -- 'ok' (approve, allocates like recordPayment) or 'mismatch' (reject, same as any other rejected receipt).
+-- foreign_keys=OFF: receipt_charges references receipts, so DROP TABLE receipts fails with FK enforcement on
+-- (libsql enforces it on file DBs that already hold receipt_charges rows, e.g. a real prova.db).
+PRAGMA foreign_keys=OFF;
+DROP TABLE IF EXISTS receipts_new; -- leftover from an interrupted earlier run; the rebuild below re-copies from receipts
 CREATE TABLE receipts_new (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -26,3 +30,4 @@ CREATE TABLE receipts_new (
 INSERT INTO receipts_new SELECT id, user_id, month, filename, pdf, sha256, text, amounts_json, bank_ref, status, expected_try, found_try, uploaded_at, admin_note, applied_try, overpaid_try FROM receipts;
 DROP TABLE receipts;
 ALTER TABLE receipts_new RENAME TO receipts;
+PRAGMA foreign_keys=ON;
