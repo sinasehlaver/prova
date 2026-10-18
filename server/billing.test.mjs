@@ -760,3 +760,18 @@ test("back-filled booking before joined_month: month browsable + payable, bookin
   await t.db.execute({ sql: "UPDATE charges SET voided_at = ? WHERE user_id = ? AND month = ?", args: [Date.now(), u.id, PAST] });
   assert.equal((await bill(u)).months[0], u.joined_month);
 });
+
+test("past unpaid aidat of never-opened months shows in other_open and is payable in one payment", async () => {
+  const u = await mk("Eski Borçlu");
+  const prev = (m) => new Date(Date.UTC(+m.slice(0, 4), +m.slice(5) - 2, 1)).toISOString().slice(0, 7);
+  const P1 = prev(M), P2 = prev(P1);
+  await t.db.execute({ sql: "UPDATE users SET joined_month = ? WHERE id = ?", args: [P2, u.id] });
+  const count = async () => (await t.db.execute({ sql: "SELECT COUNT(*) n FROM charges WHERE user_id = ? AND month IN (?, ?)", args: [u.id, P1, P2] })).rows[0].n;
+  assert.equal(await count(), 0);
+  const away = (await bill(u)).other_open.filter((i) => i.kind === "subscription" && i.id != null);
+  assert.deepEqual(away.map((i) => i.month), [P2, P1]);
+  assert.equal(await count(), 2);
+  const r = await record(u, { charges: away.map((i) => i.key), amount: away.reduce((s, i) => s + i.amount_try, 0) });
+  assert.equal(r.status, 201);
+  assert.equal((await bill(u)).other_open.filter((i) => i.id != null).length, 0);
+});

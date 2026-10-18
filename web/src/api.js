@@ -1,4 +1,5 @@
 import { tr } from "./tr.js";
+import { track } from "./busy.js";
 
 export class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -18,16 +19,22 @@ const check = (r, j, path) => {
 };
 
 export async function api(method, path, body) {
-  const r = await send("/api" + path, {
-    method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  return check(r, await r.json().catch(() => ({})), path);
+  const done = track(method);
+  try {
+    const r = await send("/api" + path, {
+      method,
+      headers: body === undefined ? {} : { "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return check(r, await r.json().catch(() => ({})), path);
+  } finally { done(); }
 }
 
 /** Raw PDF upload (server reads the body as-is, cap 5 MB). `file` may be null: an empty body = "no dekont". */
 export async function apiUpload(path, file) {
-  const r = await send("/api" + path, { method: "POST", headers: { "content-type": "application/pdf" }, body: file || undefined });
-  return check(r, await r.json().catch(() => ({})), path);
+  const done = track("POST");
+  try {
+    const r = await send("/api" + path, { method: "POST", headers: { "content-type": "application/pdf" }, body: file || undefined });
+    return check(r, await r.json().catch(() => ({})), path);
+  } finally { done(); }
 }

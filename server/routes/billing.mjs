@@ -2,7 +2,7 @@
 // Admin billing endpoints live in billing-admin.mjs and are mounted from here (keeps ROUTES to one line).
 import express, { Router } from "express";
 import { requireAuth } from "../lib/auth.mjs";
-import { browsableMonths, canBrowse, ensureMonth, fail, isMonth, monthView, openElsewhere, projectedSub, userDebt } from "../lib/billing.mjs";
+import { browsableMonths, canBrowse, ensureMonth, fail, isMonth, monthRange, monthView, openElsewhere, projectedSub, userDebt } from "../lib/billing.mjs";
 import { creditOutlook, creditPayload } from "../lib/credits.mjs";
 import { getSettings, listReceipts, MAX_PDF, submitReceipt } from "../lib/payments.mjs";
 import { currentMonth } from "../lib/tz.mjs";
@@ -20,6 +20,8 @@ export const guard = (fn) => async (req, res, next) => {
 export async function billingPayload(db, user, month) {
   const future = month > currentMonth();
   if (!future) await ensureMonth(db, user, month);
+  // Past months nobody opened have no rent row yet; make them so past unpaid aidat shows in the composer's "other months".
+  for (const m of monthRange(user.joined_month, currentMonth())) if (m !== month) await ensureMonth(db, user, m);
   const [view, receipts, cfg, credit, planned, other_open, debt] = await Promise.all([
     monthView(db, user.id, month), listReceipts(db, { userId: user.id, month }), getSettings(db), creditPayload(db, user.id),
     projectedSub(db, user, month), openElsewhere(db, user, month), userDebt(db, user.id),

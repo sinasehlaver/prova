@@ -103,6 +103,13 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 }
 .btn:hover:not(:disabled) { border-color: var(--muted); box-shadow: var(--shadow-sm); }
 .btn:active:not(:disabled) { transform: scale(0.98); }
+/* Default in-flight state (busy.js sets aria-busy on the pressed button while its write request runs) */
+.btn[aria-busy="true"] { pointer-events: none; cursor: progress; opacity: 0.85; }
+.btn[aria-busy="true"]::before {
+  content: ""; width: 1em; height: 1em; flex: none; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .btn.primary { background: var(--accent); border-color: transparent; color: var(--accent-ink); }
 .btn.primary:hover:not(:disabled) { filter: brightness(1.08); box-shadow: var(--shadow-md); border-color: transparent; }
 .btn.ghost { background: transparent; }
