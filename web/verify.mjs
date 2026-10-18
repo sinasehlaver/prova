@@ -54,13 +54,13 @@ try {
   // Day n days from today: pin 3 gün, jump to Bugün, step the window with the arrows, click the head's column slot afterwards (index = n % 3).
   const openDay = async (n) => {
     await page.click('.view-toggle [role=radio]:has-text("3 gün")');
-    await page.locator(".cal-range .btn:not([disabled])").click({ timeout: 1500 }).catch(() => {}); // disabled = already on Bugün
+    await page.locator(".cal-range .btn:not([disabled]):has-text('Bugün')").click({ timeout: 1500 }).catch(() => {}); // disabled = already on Bugün
     for (let i = 0; i < Math.floor(n / 3); i++) await page.click(".week-nav .icon-btn >> nth=1");
     return n % 3;
   };
   await page.waitForSelector(".cal-head");
   await page.click('.view-toggle [role=radio]:has-text("3 gün")');
-  await page.locator(".cal-range .btn:not([disabled])").click({ timeout: 1500 }).catch(() => {}); // disabled = already on Bugün
+  await page.locator(".cal-range .btn:not([disabled]):has-text('Bugün')").click({ timeout: 1500 }).catch(() => {}); // disabled = already on Bugün
   if ((await page.locator(".cal-head").first().getAttribute("class")).includes("today") === false) fail("3 gün window should start on today");
   // past days are browsable: the prev arrow works from today (history)
   if (await page.locator(".week-nav .icon-btn").first().isDisabled()) fail("prev arrow must work from today (history)");

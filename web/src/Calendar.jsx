@@ -3,9 +3,9 @@ import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "./icons.jsx";
 import Sheet from "./Sheet.jsx";
-import { DatePicker, Select } from "./Controls.jsx";
+import { DatePicker, GridPick, Select } from "./Controls.jsx";
 import { ErrorState, Skeleton } from "./States.jsx";
-import { D, H, dayStart, fmtDay, fmtLong, fmtShort, fmtTime, fmtWd, hourLabel, weekStart } from "./time.js";
+import { D, H, dayStart, fmtDay, fmtLong, fmtTime, fmtWd, hourLabel, weekStart } from "./time.js";
 
 // ponytail: fixed 08:00-24:00 window in the UI (API accepts any whole hour). Make it a setting if a room runs earlier.
 const FROM = 8, TO = 22; // no booking ends after 22:00 (noise)
@@ -364,6 +364,8 @@ function ViewSheet({ r, now, me, onClose, onDone }) {
   );
 }
 
+const MONTH_NAMES = Array.from({ length: 12 }, (_, m) => new Date(Date.UTC(2000, m, 1)).toLocaleDateString("tr-TR", { month: "long", timeZone: "UTC" }));
+
 export default function Calendar({ me }) {
   const wide = useWide();
   const [now, setNow] = useState(Date.now());
@@ -423,6 +425,14 @@ export default function Calendar({ me }) {
   const nextOk = shown + n * D <= last;
   const go = (dir) => setSel(Math.min(last - (n - 1) * D, Math.max(from, sel + dir * n * D)));
   const atToday = n === 7 ? wk === weekStart(today) : sel === today;
+  // Month / year buttons: jump the anchor to the 1st of the picked month (same year) or to the same month+day in the picked year, clamped to the navigable range.
+  const ist = (ms) => new Date(ms + 3 * H);
+  const ymd = (y, m, d = 1) => Date.UTC(y, m, d) - 3 * H;
+  const jump = (ms) => setSel(Math.min(last - (n - 1) * D, Math.max(from, ms)));
+  const sy = ist(shown).getUTCFullYear(), sm = ist(shown).getUTCMonth();
+  const monthItems = MONTH_NAMES.map((label, m) => ({ value: m, label: label.slice(0, 3), aria: `${label} ${sy}`, disabled: ymd(sy, m + 1) - D < from || ymd(sy, m) > last }));
+  const years = Array.from({ length: ist(last).getUTCFullYear() - ist(from).getUTCFullYear() + 1 }, (_, i) => ist(from).getUTCFullYear() + i);
+  const yearItems = years.map((y) => ({ value: y, label: String(y), aria: String(y) }));
   const firstFree = () => { const d = Math.max(today, shown); for (let h = FROM; h < TO; h++) if (d + h * H > now) return h; return FROM; };
 
   const readOnly = !!me.observer || me.role === "listener";
@@ -435,17 +445,21 @@ export default function Calendar({ me }) {
       {/* Everything down to the day strip is pinned under the top bar; only the hour grid scrolls. Keep this a direct child of section.cal. */}
       <div className="cal-sticky">
         <div className="page-head">
-          <h2>{tr.cal.title}</h2>
-          <div className="cal-range">
-            <button className="btn sm ghost" onClick={() => setSel(today)} disabled={atToday}>{tr.cal.today}</button>
-            <strong className="num">{`${fmtShort(shown)} – ${fmtShort(shown + (n - 1) * D)}`}</strong>
-          </div>
-          <div className="cal-side">
+          <div className="cal-title">
+            <h2>{tr.cal.title}</h2>
             <div className="seg sm view-toggle" role="radiogroup" aria-label={tr.cal.viewLabel}>
               {[["3", tr.cal.view3], ["7", tr.cal.view7]].map(([v, label]) => (
                 <button key={v} type="button" role="radio" aria-checked={view === v} onClick={() => setView(v)}>{label}</button>
               ))}
             </div>
+          </div>
+          <div className="cal-range">
+            <button className="btn sm ghost" onClick={() => setSel(today)} disabled={atToday}>{tr.cal.today}</button>
+            <strong className="num">{`${fmtDay(shown)} – ${fmtDay(shown + (n - 1) * D)}`}</strong>
+            <GridPick className="pick-month" value={sm} label={MONTH_NAMES[sm]} items={monthItems} ariaLabel={tr.cal.pickMonth} onPick={(m) => jump(ymd(sy, m))} />
+            <GridPick className="pick-year" value={sy} label={String(sy)} items={yearItems} ariaLabel={tr.cal.pickYear} onPick={(y) => jump(ymd(y, sm))} />
+          </div>
+          <div className="cal-side">
             {!readOnly && (
               <button className="btn primary" onClick={() => setSheet({ kind: "new", day: Math.max(today, shown), hour: firstFree() })}>
                 <PlusIcon width="18" height="18" />{tr.cal.book}

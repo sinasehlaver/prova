@@ -254,6 +254,9 @@ button.link:active { transform: scale(0.98); }
 .week-nav > .icon-btn { flex: none; width: 2rem; min-width: 0; padding: 0; }
 .cal-wk .cal-card { margin-inline: calc(2rem + var(--s-1)); } /* same inset as the .week-nav arrows so the day heads line up with the columns */
 .cal-range { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: var(--s-2); }
+.cal-title { display: flex; align-items: center; gap: var(--s-3); min-width: 0; }
+.grid-pick { gap: var(--s-1); }
+.grid-pick[aria-expanded="true"] .ctl-chev { transform: rotate(180deg); }
 .cal-range strong { font-family: var(--font-display); text-transform: capitalize; }
 .seg.sm { padding: 2px; gap: 2px; }
 .seg.sm button { min-height: 1.75rem; padding: 0 var(--s-2); font-size: var(--fs-1); }
@@ -268,12 +271,12 @@ button.link:active { transform: scale(0.98); }
   border-bottom: 1px solid var(--line); box-shadow: var(--shadow-sm);
 }
 .cal-sticky .page-head { margin-bottom: var(--s-2); flex-wrap: wrap; row-gap: var(--s-1); }
-/* Wide: title | date + Bugün (truly page-centred, 1fr side columns) | right zone where 3/7 gün sits centred in the gap between the date and Rezervasyon yap. */
+/* Wide: title + 3/7 gün toggle (left) | Bugün + month/year pickers + date (truly page-centred, 1fr side columns) | Rezervasyon yap (right). */
 @media (min-width: 721px) {
   .cal-sticky .page-head { display: grid; grid-template-columns: 1fr auto 1fr; }
   .cal-sticky .cal-range { flex: none; flex-wrap: nowrap; }
   .cal-side { display: flex; align-items: center; min-width: 0; }
-  .cal-side .view-toggle { margin-inline: auto; }
+  .cal-side { justify-content: flex-end; }
   .cal-side .btn.primary { flex: none; }
 }
 @media (max-width: 720px) {

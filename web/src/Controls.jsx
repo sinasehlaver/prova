@@ -177,6 +177,31 @@ export function MonthPicker({ value, onChange, min, max, className = "", ariaLab
   );
 }
 
+/** Button that opens a 3-column grid of choices. items: [{value,label,disabled,aria}]; onPick(value). Used by the calendar head's month/year buttons. */
+export function GridPick({ value, label, items, onPick, className = "", ariaLabel }) {
+  const btn = useRef();
+  const [open, setOpen] = useState(false);
+  const close = useCallback(() => setOpen(false), []);
+  return (
+    <>
+      <button type="button" ref={btn} className={`btn sm ghost grid-pick ${className}`} aria-haspopup="dialog" aria-expanded={open} aria-label={ariaLabel} data-value={value} onClick={() => setOpen(!open)}>
+        <span>{label}</span>
+        <svg className="ctl-chev" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="m2.5 4.5 3.5 3.5 3.5-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      </button>
+      {open && (
+        <Popover anchor={btn} onClose={close} minWidth={240} className="ctl-cal">
+          <div className="ctl-mon-grid">
+            {items.map((it) => (
+              <button type="button" key={it.value} data-v={it.value} className={`ctl-day${it.value === value ? " sel" : ""}`} disabled={it.disabled} aria-pressed={it.value === value} aria-label={it.aria}
+                onClick={() => { close(); btn.current?.focus(); onPick(it.value); }} ref={(el) => { if (el && it.value === value && !el.dataset.f) { el.dataset.f = "1"; el.focus({ preventScroll: true }); } }}>{it.label}</button>
+            ))}
+          </div>
+        </Popover>
+      )}
+    </>
+  );
+}
+
 /** In-app replacement for window.confirm. */
 export function ConfirmSheet({ title, body, confirmLabel, danger, onConfirm, onClose }) {
   return (

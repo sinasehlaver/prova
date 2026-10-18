@@ -81,6 +81,8 @@ export const tr = {
     view3: "3 gün",
     view7: "7 gün",
     today: "Bugün",
+    pickMonth: "Ay seç",
+    pickYear: "Yıl seç",
     mine: "Senin",
     newTitle: "Yeni rezervasyon",
     date: "Tarih",
