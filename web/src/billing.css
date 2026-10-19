@@ -10,7 +10,7 @@
 
 .payto { padding: var(--s-4); margin-bottom: var(--s-4); display: grid; gap: var(--s-2); }
 .payto h3 { font-size: var(--fs-2); color: var(--muted); font-weight: 600; }
-.payto-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.payto-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-3); }
 .iban { font: 600 var(--fs-3) ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.02em; word-break: break-all; }
 
 .sec-title { font-size: var(--fs-2); font-weight: 600; color: var(--muted); margin: var(--s-5) 0 var(--s-2); }

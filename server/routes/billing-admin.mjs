@@ -66,7 +66,7 @@ export default ({ db }) => {
     const u = await userOf(req.params.id, req);
     const month = req.query.month ?? currentMonth();
     if (!(await canBrowse(db, u, month))) throw fail(400, "Geçersiz ay");
-    res.json(await billingPayload(db, u, month));
+    res.json(await billingPayload(db, u, month, { admin: true }));
   }));
   r.get("/admin/users/:id/receipts", guard(async (req, res) => {
     res.json(await listReceipts(db, { userId: (await userOf(req.params.id, req)).id }));

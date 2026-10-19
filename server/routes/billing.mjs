@@ -2,6 +2,7 @@
 // Admin billing endpoints live in billing-admin.mjs and are mounted from here (keeps ROUTES to one line).
 import express, { Router } from "express";
 import { requireAuth } from "../lib/auth.mjs";
+import { rateLimit } from "../lib/ratelimit.mjs";
 import { browsableMonths, canBrowse, ensureMonth, fail, isMonth, monthRange, monthView, openElsewhere, projectedSub, userDebt } from "../lib/billing.mjs";
 import { creditOutlook, creditPayload } from "../lib/credits.mjs";
 import { deleteReceipt, getSettings, listReceipts, MAX_PDF, submitReceipt } from "../lib/payments.mjs";
@@ -17,7 +18,7 @@ export const guard = (fn) => async (req, res, next) => {
 // A FUTURE month is never materialised by a read (its rent would snapshot today's fee and a later setFee for that month
 // would miss it) - it shows its real charges (bookings already made) plus a display-only `upcoming` planned rent.
 // credit_cover = creditOutlook (display-only: how much of this month the existing credit would cover; nothing applied).
-export async function billingPayload(db, user, month) {
+export async function billingPayload(db, user, month, { admin = false } = {}) {
   const future = month > currentMonth();
   if (!future) await ensureMonth(db, user, month);
   // Past months nobody opened have no rent row yet; make them so past unpaid aidat shows in the composer's "other months".
@@ -28,9 +29,12 @@ export async function billingPayload(db, user, month) {
   ]);
   const projected_try = planned?.amount_try ?? 0;
   const credit_cover = await creditOutlook(db, user, month, view.kalan + projected_try, credit.balance_try);
+  // The IBAN is only shown to a member who actually owes something (kalan / past debt / a real unpaid item); admins always see it.
+  const owes = view.kalan > 0 || debt.debt_try > 0 || (other_open ?? []).some((i) => i.id != null);
+  const pay_to = admin || owes ? { iban: cfg.iban, holder: cfg.holder } : { iban: "", holder: "", hidden: true };
   return {
     ...view, items: planned ? [planned, ...view.items] : view.items, projected_try, future, other_open,
-    months: await browsableMonths(db, user), receipts, pay_to: { iban: cfg.iban, holder: cfg.holder },
+    months: await browsableMonths(db, user), receipts, pay_to,
     ...debt, // debt_try + debt_months = cumulative unpaid over all months <= current (unpaid stays in its own month)
     credit, credit_cover, // credit = what the community owes the member (all months)
   };
@@ -53,7 +57,7 @@ export const bodyBuf = (req) => (Buffer.isBuffer(req.body) ? req.body : Buffer.a
 export default ({ db }) => {
   const r = Router();
 
-  r.get("/billing", requireAuth, guard(async (req, res) => {
+  r.get("/billing", requireAuth, rateLimit({ max: 60, windowMs: 60_000, key: (req) => `billing:${req.user.id}` }), guard(async (req, res) => {
     res.json(await billingPayload(db, req.user, await pickMonth(db, req.query.month, req.user)));
   }));
 

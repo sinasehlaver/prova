@@ -3,13 +3,26 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { authMiddleware, setSessionCookie } from "./lib/auth.mjs";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { registerRoutes } from "./routes/index.mjs";
+import { securityHeaders } from "./lib/security.mjs";
 
 const DIST = join(fileURLToPath(new URL(".", import.meta.url)), "..", "web", "dist");
+
+// CSP needs the sha256 of index.html's inline theme script (everything else is same-origin).
+function inlineScriptHashes() {
+  try {
+    const html = readFileSync(join(DIST, "index.html"), "utf8");
+    return [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => createHash("sha256").update(m[1]).digest("base64"));
+  } catch { return []; }
+}
 
 export function createApp({ db }) {
   const app = express();
   app.set("trust proxy", 1); // Render/Fly terminate TLS; keeps req.secure right for the cookie
+  app.disable("x-powered-by");
+  app.use(securityHeaders(inlineScriptHashes()));
   app.use(express.json({ limit: "1mb" }));
   app.use(authMiddleware(db));
 

@@ -1,11 +1,13 @@
 import { Router } from "express";
 import { clearSessionCookie, isBootstrap, newToken, requireAuth, requireSession, setSessionCookie, hashPassword, verifyPassword, normEmail } from "../lib/auth.mjs";
 import { currentMonth } from "../lib/tz.mjs";
+import { clear, isLimited, record } from "../lib/ratelimit.mjs";
 
 export const ACCENTS = ["brick", "blue", "green", "purple", "pink", "yellow", "gray"];
 export const publicUser = ({ id, name, phone, role, active, status, joined_month, email, accent }) => ({ id, name, phone, role, active: !!active, status: status ?? "approved", joined_month, email, accent: ACCENTS.includes(accent) ? accent : "brick" });
 
 const SIGNUP_WINDOW = 10 * 60_000, SIGNUP_PER_IP = 5, MAX_PENDING = 50;
+const LOGIN_WINDOW = 15 * 60_000, LOGIN_FAILS_PER_EMAIL = 5, LOGIN_FAILS_PER_IP = 20; // failures only
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Shared name/phone validation (own profile + signup). Returns { error } or { name, phone }. */
@@ -80,11 +82,15 @@ export default ({ db }) => {
     if (req.user) return res.status(409).json({ error: "Zaten giriş yaptın" });
     const c = cleanLogin(req.body);
     if (c.error) return res.status(400).json({ error: c.error });
+    // Brute-force guard: failures counted per e-mail AND per IP; a locked e-mail stays locked even for the right password.
+    const kE = `login:e:${c.email}`, kI = `login:ip:${req.ip}`;
+    if (isLimited(kE, { max: LOGIN_FAILS_PER_EMAIL, windowMs: LOGIN_WINDOW }) || isLimited(kI, { max: LOGIN_FAILS_PER_IP, windowMs: LOGIN_WINDOW }))
+      return res.status(429).json({ error: "Çok fazla deneme. Biraz sonra tekrar dene." });
     const { rows } = await db.execute({ sql: "SELECT * FROM users WHERE email = ? AND active = 1 AND status = 'approved'", args: [c.email] });
     const user = rows[0];
-    if (!user || !user.password_hash) return res.status(401).json({ error: "E-posta veya şifre yanlış" });
-    const ok = await verifyPassword(c.password, user.password_hash);
-    if (!ok) return res.status(401).json({ error: "E-posta veya şifre yanlış" });
+    const ok = !!user?.password_hash && await verifyPassword(c.password, user.password_hash);
+    if (!ok) { record(kE, LOGIN_WINDOW); record(kI, LOGIN_WINDOW); return res.status(401).json({ error: "E-posta veya şifre yanlış" }); }
+    clear(kE);
     setSessionCookie(req, res, user.invite_token);
     res.json({ ...publicUser(user), observer: await isBootstrap(db, user) }); // same shape as /me (own account)
   });
@@ -113,12 +119,16 @@ export default ({ db }) => {
     const ok = await verifyPassword(current, rows[0].password_hash);
     if (!ok) return res.status(401).json({ error: "Mevcut şifre yanlış" });
     const hash = await hashPassword(next);
-    await db.execute({ sql: "UPDATE users SET password_hash = ? WHERE id = ?", args: [hash, req.user.id] });
+    // New password = old sessions/links die (token rotates); this device stays logged in.
+    const token = newToken();
+    await db.execute({ sql: "UPDATE users SET password_hash = ?, invite_token = ? WHERE id = ?", args: [hash, token, req.user.id] });
+    setSessionCookie(req, res, token);
     res.json({ ok: true });
   });
 
-  // The cookie IS users.invite_token: logging out only drops the cookie, the token (= the /i/ link) stays valid.
-  r.post("/logout", (req, res) => {
+  // The cookie IS users.invite_token: logging out rotates it, so a stolen cookie / old /i/ link dies (other devices log in again).
+  r.post("/logout", async (req, res) => {
+    if (req.user) await db.execute({ sql: "UPDATE users SET invite_token = ? WHERE id = ?", args: [newToken(), req.user.id] });
     clearSessionCookie(req, res);
     res.json({ ok: true });
   });

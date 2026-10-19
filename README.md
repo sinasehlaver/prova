@@ -120,7 +120,8 @@ Go to the **Takvim** (Calendar) tab.
 
 Go to the **Ödemelerim** (My payments) tab. It shows what you owe this month
 (monthly dues + any bookings you made), what's already been paid, and the
-community's bank details (IBAN, tap to copy).
+community's bank details. The IBAN is only shown while you owe something, is masked
+until you tap **Göster**, and can be copied with one tap.
 
 Payment itself happens outside the app: transfer the money, then either **hand
 the receipt (dekont) to an admin** or **upload it yourself** from the
@@ -201,6 +202,13 @@ Screenshots aren't kept by default; set `PROVA_SHOTS=<dir>` to save them.
 The browser part of `verify` needs macOS or Linux with `bash` + Chrome
 installed; on Windows, run `npm test` and `npm run dev` and check the UI by
 hand (or use WSL).
+
+## Protecting the IBAN
+
+Only approved, logged-in members who owe something get it (admins always); it is never in the
+page bundle, API responses are `no-store`, the site is `noindex` + `robots.txt` Disallow, logins
+lock after 5 wrong passwords per e-mail (15 min), `/api/billing` is capped at 60/min per user, and
+logging out or changing the password rotates the session token. Never commit the real IBAN (the repo is public).
 
 ## Deploying
 

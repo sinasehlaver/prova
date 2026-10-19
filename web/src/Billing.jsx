@@ -286,18 +286,24 @@ export const copyText = async (text) => {
 };
 
 export function PayTo({ pay_to, onCopied }) {
+  const [shown, setShown] = useState(false); // masked until tapped: no casual screenshots / shoulder-surfing
+  const spaced = (v) => v.replace(/(.{4})/g, "$1 ").trim();
+  const masked = pay_to.iban ? spaced(pay_to.iban.slice(0, 4) + "•".repeat(pay_to.iban.length - 6) + pay_to.iban.slice(-2)) : "";
   return (
     <section className="card payto" aria-label={tr.billing.payTo}>
       <h3>{tr.billing.payTo}</h3>
       {pay_to.iban ? (
         <>
           <div className="payto-row">
-            <span className="iban">{pay_to.iban.replace(/(.{4})/g, "$1 ").trim()}</span>
-            <button className="btn sm" onClick={async () => { await copyText(pay_to.iban); onCopied?.(); }}><CopyIcon width="16" height="16" />{tr.billing.copyIban}</button>
+            <span className="iban">{shown ? spaced(pay_to.iban) : masked}</span>
+            <span className="row wrap">
+              <button className="btn sm" onClick={() => setShown(!shown)}>{shown ? tr.billing.hideIban : tr.billing.showIban}</button>
+              <button className="btn sm" onClick={async () => { await copyText(pay_to.iban); onCopied?.(); }}><CopyIcon width="16" height="16" />{tr.billing.copyIban}</button>
+            </span>
           </div>
           {pay_to.holder && <div className="muted small">{tr.billing.holder}: {pay_to.holder}</div>}
         </>
-      ) : <p className="muted small" style={{ margin: 0 }}>{tr.billing.noIban}</p>}
+      ) : <p className="muted small" style={{ margin: 0 }}>{pay_to.hidden ? tr.billing.ibanWhenOwed : tr.billing.noIban}</p>}
     </section>
   );
 }

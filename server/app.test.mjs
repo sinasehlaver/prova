@@ -206,14 +206,18 @@ test("PATCH /api/me accent: own choice only, allowlisted, default brick, other u
   assert.equal((await t.fetch("/api/me", { as: t.member }).then((r) => r.json())).accent, "brick");
 });
 
-test("POST /api/logout clears the cookie but keeps the invite token valid", async () => {
+test("POST /api/logout clears the cookie and rotates the token (old cookie/link dies)", async () => {
+  const old = { ...t.member };
   const r = await t.fetch("/api/logout", { method: "POST", as: t.member });
   assert.equal(r.status, 200);
   const sc = r.headers.get("set-cookie");
   assert.match(sc, /prova_session=;/);
   assert.match(sc, /Expires=Thu, 01 Jan 1970|Max-Age=0/i);
   assert.equal((await t.fetch("/api/me")).status, 401); // no cookie -> logged out
-  assert.equal((await t.fetch(`/i/${t.member.invite_token}`)).status, 302); // same link logs back in
+  assert.equal((await t.fetch("/api/me", { as: old })).status, 401); // stolen/old cookie is dead
+  assert.match((await t.fetch(`/i/${old.invite_token}`)).headers.get("location"), /davet=gecersiz/);
+  const fresh = (await t.db.execute({ sql: "SELECT * FROM users WHERE id = ?", args: [old.id] })).rows[0];
+  Object.assign(t.member, { invite_token: fresh.invite_token }); // later tests keep using the member row
   assert.equal((await t.fetch("/api/me", { as: t.member })).status, 200);
   assert.equal((await t.fetch("/api/logout", { method: "POST" })).status, 200); // idempotent when logged out
 });
@@ -345,4 +349,27 @@ test("existing/admin-created users stay approved; migration default", async () =
   const u = await (await t.fetch("/api/users", { method: "POST", as: t.admin, body: { name: "Elle Eklenen" } })).json();
   assert.equal(u.status, "approved");
   assert.equal((await t.fetch("/api/me", { as: u })).status, 200);
+});
+
+
+test("security headers: no-store on API, noindex, CSP on shell, robots.txt disallows all", async () => {
+  const r = await t.fetch("/api/me", { as: t.member });
+  assert.equal(r.headers.get("cache-control"), "no-store");
+  assert.equal(r.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(r.headers.get("x-powered-by"), null);
+  assert.match(r.headers.get("x-robots-tag"), /noindex/);
+  const robots = await t.fetch("/robots.txt");
+  assert.match(await robots.text(), /Disallow: \//);
+  const shell = await t.fetch("/");
+  assert.match(shell.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+});
+
+test("POST /api/login locks after 5 failures per e-mail (even for the right password), billing is rate-limited", async () => {
+  await t.fetch("/api/signup", { method: "POST", body: { name: "Kilit Deneme", email: "kilit@example.com", password: "dogru-sifre-1" } });
+  await t.db.execute("UPDATE users SET status = 'approved', active = 1 WHERE email = 'kilit@example.com'");
+  for (let i = 0; i < 5; i++) assert.equal((await t.fetch("/api/login", { method: "POST", body: { email: "kilit@example.com", password: "yanlis-sifre" } })).status, 401);
+  assert.equal((await t.fetch("/api/login", { method: "POST", body: { email: "kilit@example.com", password: "dogru-sifre-1" } })).status, 429);
+  let last = 200;
+  for (let i = 0; i < 65 && last !== 429; i++) last = (await t.fetch("/api/billing", { as: t.member2 })).status;
+  assert.equal(last, 429);
 });

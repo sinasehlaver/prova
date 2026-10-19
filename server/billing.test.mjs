@@ -817,3 +817,18 @@ test("delete dekont: member own pending/rejected ok, other's 404, ok 409, unauth
   await admin(`/receipts/${p.id}/reject`, { method: "POST", body: { note: "x" } });
   assert.equal((await del(`/api/billing/receipts/${p.id}`, u)).status, 200);
 });
+
+test("IBAN is only in a member's /billing while they owe something; admin view always has it", async () => {
+  const u = await mk("IbanGizli");
+  await admin("/settings", { method: "PUT", body: { iban: "TR330006100519786457841326", holder: "Oda", requireRecipient: false } });
+  const first = await bill(u);
+  assert.equal(first.pay_to.iban, "TR330006100519786457841326"); // owes this month's aidat
+  await admin(`/charges/${first.items.find((i) => i.kind === "subscription").id}/waive`, { method: "POST", body: {} });
+  const clear = await bill(u);
+  assert.equal(clear.kalan, 0);
+  assert.deepEqual(clear.pay_to, { iban: "", holder: "", hidden: true });
+  assert.doesNotMatch(JSON.stringify(clear), /TR33/);
+  const adm = await J(await admin(`/users/${u.id}/billing?month=${M}`));
+  assert.equal(adm.pay_to.iban, "TR330006100519786457841326");
+  await admin("/settings", { method: "PUT", body: { iban: "", holder: "", requireRecipient: false } });
+});
