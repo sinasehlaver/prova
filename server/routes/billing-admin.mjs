@@ -3,7 +3,7 @@ import { Router } from "express";
 import { BOOTSTRAP_ID_SQL, bootstrapId, requireAdmin } from "../lib/auth.mjs";
 import { addAdjustment, canBrowse, ensureMonth, fail, isMonth, listFees, maxMonth, monthRange, outstandingOverview, setFee, waiveCharge } from "../lib/billing.mjs";
 import { creditPayload, settleCredit } from "../lib/credits.mjs";
-import { getSettings, listReceipts, parseReceipt, parseTokens, recordPayment, reviewReceipt } from "../lib/payments.mjs";
+import { deleteReceipt, getSettings, listReceipts, parseReceipt, parseTokens, recordPayment, reviewReceipt } from "../lib/payments.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 import { billingPayload, bodyBuf, guard, rawPdf } from "./billing.mjs";
 
@@ -55,6 +55,11 @@ export default ({ db }) => {
       await reviewReceipt(db, Number(req.params.id), action, b.note, { month: b.month, chargeIds, paidTry: b.amount_try != null ? Number(b.amount_try) : undefined });
       res.json((await listReceipts(db, { id: Number(req.params.id) }))[0]);
     }));
+
+  r.delete("/admin/receipts/:id", guard(async (req, res) => {
+    await deleteReceipt(db, Number(req.params.id));
+    res.json({ ok: true });
+  }));
 
   // ---- per-user views
   r.get("/admin/users/:id/billing", guard(async (req, res) => {

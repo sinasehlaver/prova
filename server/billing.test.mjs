@@ -151,6 +151,22 @@ const fakePdf = () => Buffer.from(`%PDF-1.4\n%member-upload-test-${Date.now()}-$
 const upload = (u) =>
   fetch(`${t.base}/api/billing/receipts`, { method: "POST", headers: { "content-type": "application/pdf", cookie: `${COOKIE}=${u.invite_token}` }, body: fakePdf() });
 
+test("member upload lands in the viewed month (?month=), bad month = 400, admin month filter shows it", async () => {
+  const u = await mk("YukleAy");
+  const post = (q) => fetch(`${t.base}/api/billing/receipts${q}`, { method: "POST", headers: { "content-type": "application/pdf", cookie: `${COOKIE}=${u.invite_token}` }, body: fakePdf() });
+  assert.equal((await post("?month=nope")).status, 400);
+  assert.equal((await post("?month=2999-01")).status, 400); // past the browse cap
+  const next = new Date(); next.setUTCMonth(next.getUTCMonth() + 1);
+  const nm = next.toISOString().slice(0, 7);
+  const r = await J(await post(`?month=${nm}`));
+  assert.equal(r.month, nm);
+  assert.equal(r.status, "pending");
+  const cur = await J(await post(""));
+  assert.equal(cur.month, M);
+  const inNext = await J(await admin(`/receipts?status=pending&user_id=${u.id}&month=${nm}`));
+  assert.deepEqual(inNext.map((x) => x.id), [r.id]);
+});
+
 test("member self-serve upload (re-enabled, admin-approval-only): PENDING, non-allocating; admin approve/reject decide", async () => {
   const u = await mk("Yukle");
   assert.equal((await t.fetch(`/api/billing/receipts`, { method: "POST" })).status, 401); // anon
@@ -774,4 +790,30 @@ test("past unpaid aidat of never-opened months shows in other_open and is payabl
   const r = await record(u, { charges: away.map((i) => i.key), amount: away.reduce((s, i) => s + i.amount_try, 0) });
   assert.equal(r.status, 201);
   assert.equal((await bill(u)).other_open.filter((i) => i.id != null).length, 0);
+});
+
+test("delete dekont: member own pending/rejected ok, other's 404, ok 409, unauth 401; admin delete needs undo first", async () => {
+  const u = await mk("SilA"), o = await mk("SilB");
+  const del = (path, as) => t.fetch(path, { method: "DELETE", as });
+  const mine = await J(await upload(u));
+  assert.equal((await t.fetch(`/api/billing/receipts/${mine.id}`, { method: "DELETE" })).status, 401);
+  assert.equal((await del(`/api/billing/receipts/${mine.id}`, o)).status, 404);
+  assert.equal((await del(`/api/billing/receipts/${mine.id}`, u)).status, 200);
+  assert.equal((await bill(u)).receipts.length, 0);
+  assert.equal((await del(`/api/billing/receipts/${mine.id}`, u)).status, 404);
+
+  // ok (money allocated): member 409, admin 409 until undone
+  assert.equal((await record(o, { amount: 1 })).status, 201);
+  const ok = (await bill(o)).receipts[0];
+  assert.equal((await del(`/api/billing/receipts/${ok.id}`, o)).status, 409);
+  assert.equal((await del(`/api/admin/receipts/${ok.id}`, t.admin)).status, 409);
+  assert.equal((await del(`/api/admin/receipts/${ok.id}`, o)).status, 403);
+  await admin(`/receipts/${ok.id}/reject`, { method: "POST", body: {} });
+  assert.equal((await del(`/api/admin/receipts/${ok.id}`, t.admin)).status, 200);
+  assert.equal((await bill(o)).receipts.length, 0);
+
+  // member's rejected upload can be deleted by the member
+  const p = await J(await upload(u));
+  await admin(`/receipts/${p.id}/reject`, { method: "POST", body: { note: "x" } });
+  assert.equal((await del(`/api/billing/receipts/${p.id}`, u)).status, 200);
 });

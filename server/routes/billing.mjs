@@ -4,7 +4,7 @@ import express, { Router } from "express";
 import { requireAuth } from "../lib/auth.mjs";
 import { browsableMonths, canBrowse, ensureMonth, fail, isMonth, monthRange, monthView, openElsewhere, projectedSub, userDebt } from "../lib/billing.mjs";
 import { creditOutlook, creditPayload } from "../lib/credits.mjs";
-import { getSettings, listReceipts, MAX_PDF, submitReceipt } from "../lib/payments.mjs";
+import { deleteReceipt, getSettings, listReceipts, MAX_PDF, submitReceipt } from "../lib/payments.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 import billingAdmin from "./billing-admin.mjs";
 
@@ -61,8 +61,14 @@ export default ({ db }) => {
   // selection. Lands as status='pending' - it affects no balance until an admin approves (POST
   // /api/admin/receipts/:id/approve, which now also accepts a pending receipt) or rejects it. Nothing automatic.
   r.post("/billing/receipts", requireAuth, rawPdf, guard(async (req, res) => {
-    const id = await submitReceipt(db, req.user, { buffer: bodyBuf(req), filename: req.query.filename });
+    const month = await pickMonth(db, req.query.month, req.user); // the month being viewed (default current); bad/out of range = 400
+    const id = await submitReceipt(db, req.user, { buffer: bodyBuf(req), filename: req.query.filename, month });
     res.status(201).json((await listReceipts(db, { id }))[0]);
+  }));
+
+  r.delete("/billing/receipts/:id", requireAuth, guard(async (req, res) => {
+    await deleteReceipt(db, Number(req.params.id), { userId: req.user.id });
+    res.json({ ok: true });
   }));
 
   r.get("/receipts/:id/pdf", requireAuth, guard(async (req, res) => {

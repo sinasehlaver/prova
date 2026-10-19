@@ -263,6 +263,7 @@ export const tr = {
     view: "Dekontu aç",
     coversSelf: "Kapsadığı kalemler",
     owedSelf: "Topluluk sana borçlu",
+    del: { btn: "Dekontu sil", title: "Dekont silinsin mi?", body: "Bu dekont kalıcı olarak silinir. Geri alınamaz.", done: "Dekont silindi" },
   },
   admin: {
     sections: { members: "Üyeler", receipts: "Ödemeler", fees: "Ücretler", economics: "Ekonomi", settings: "Ayarlar" },
@@ -294,6 +295,7 @@ export const tr = {
     pendingHint: "Üye bu dekontu yükledi, henüz incelenmedi. Neyi kapsadığını seç, ödenen tutarı gir, sonra onayla ya da reddet.",
     approved: "Onaylandı",
     rejected: "Reddedildi",
+    receiptDeleted: "Dekont silindi",
     notePh: "Not (isteğe bağlı)",
     covers: "Kapsadığı kalemler",
     applied: "Sayılan",

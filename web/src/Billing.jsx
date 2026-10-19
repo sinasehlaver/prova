@@ -8,6 +8,7 @@ import { tr } from "./tr.js";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
 import { fmtShort, fmtTime } from "./time.js";
 import { ChevronLeftIcon, ChevronRightIcon, CopyIcon } from "./icons.jsx";
+import { ConfirmSheet, GridPick } from "./Controls.jsx";
 
 export const fmtTRY = (n) => new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY", maximumFractionDigits: 2 }).format(n ?? 0);
 export const monthLabel = (m) =>
@@ -69,10 +70,25 @@ export function PaySummary({ count, sum, paid, spill, owed, saved, paidLabel = t
 export function MonthNav({ month, months, onChange }) {
   const i = months.indexOf(month);
   const future = month > nowMonth();
+  const y = month.slice(0, 4), mi = +month.slice(5, 7) - 1;
+  const names = Array.from({ length: 12 }, (_, m) => new Intl.DateTimeFormat("tr-TR", { month: "long", timeZone: "UTC" }).format(Date.UTC(2000, m, 1)));
+  const key = (yy, m) => `${yy}-${String(m + 1).padStart(2, "0")}`;
+  const has = new Set(months);
+  const monthItems = names.map((n, m) => ({ value: m, label: n.slice(0, 3), aria: `${n} ${y}`, disabled: !has.has(key(y, m)) }));
+  const yearItems = [...new Set(months.map((m) => m.slice(0, 4)))].map((yy) => ({ value: yy, label: yy, aria: yy }));
+  const pickYear = (yy) => {
+    const inY = months.filter((m) => m.startsWith(yy));
+    if (!inY.length) return;
+    const want = key(yy, mi);
+    onChange(has.has(want) ? want : want < inY[0] ? inY[0] : inY[inY.length - 1]);
+  };
   return (
     <div className="mnav">
       <button className="icon-btn" disabled={i <= 0} onClick={() => onChange(months[i - 1])} aria-label={tr.billing.monthPrev}><ChevronLeftIcon /></button>
-      <strong aria-live="polite">{monthLabel(month)}{future && <span className="pill future">{tr.billing.future.badge}</span>}</strong>
+      <strong aria-live="polite" aria-label={monthLabel(month)}>
+        <GridPick className="pick-month" value={mi} label={names[mi]} items={monthItems} ariaLabel={tr.cal.pickMonth} onPick={(m) => onChange(key(y, m))} />
+        <GridPick className="pick-year" value={y} label={y} items={yearItems} ariaLabel={tr.cal.pickYear} onPick={pickYear} />
+        {future && <span className="pill future">{tr.billing.future.badge}</span>}</strong>
       <button className="icon-btn" disabled={i < 0 || i >= months.length - 1} onClick={() => onChange(months[i + 1])} aria-label={tr.billing.monthNext}><ChevronRightIcon /></button>
     </div>
   );
@@ -195,7 +211,18 @@ export function ItemList({ items, selectable, selected, onToggle, extra, empty =
  * surplus/"artan" credit, never the paid/covered total). Same data the admin sees, already in this receipt's
  * `charges`/`expected_try`/`paid_try`/`spill_try`/`overpaid_try` (listReceipts, scoped to the caller's own user_id).
  */
-export function ReceiptRow({ r, children }) {
+/** "Dekontu sil" button + ConfirmSheet; `onDelete` does the request. Callers only render it when the receipt is deletable (not 'ok'). */
+export function DeleteReceipt({ onDelete }) {
+  const [sure, setSure] = useState(false);
+  return (
+    <>
+      <button type="button" className="btn danger" onClick={() => setSure(true)}>{tr.billing.del.btn}</button>
+      {sure && <ConfirmSheet title={tr.billing.del.title} body={tr.billing.del.body} confirmLabel={tr.billing.del.btn} danger onClose={() => setSure(false)} onConfirm={onDelete} />}
+    </>
+  );
+}
+
+export function ReceiptRow({ r, onDelete, children }) {
   const ok = r.status === "ok";
   const picked = r.charges.filter((c) => c.selected !== false);
   return (
@@ -223,6 +250,7 @@ export function ReceiptRow({ r, children }) {
       <div className="row wrap">
         {r.has_pdf && <a className="link" href={`/api/receipts/${r.id}/pdf`} target="_blank" rel="noreferrer">{tr.billing.view}</a>}
         <span className="muted small">{dayTime.format(r.uploaded_at)}</span>
+        {onDelete && r.status !== "ok" && !String(r.admin_note ?? "").startsWith("Yönetici kaydetti") && <DeleteReceipt onDelete={() => onDelete(r)} />}
       </div>
       {children}
     </li>
@@ -276,10 +304,15 @@ export default function Billing() {
     if (!/pdf$/i.test(f.name) && f.type !== "application/pdf") return say(tr.billing.onlyPdf);
     setUploading(true);
     try {
-      await apiUpload("/billing/receipts", f);
+      await apiUpload("/billing/receipts" + (data?.month ? `?month=${data.month}` : ""), f);
       say(tr.billing.uploaded);
       await load(data?.month);
     } catch (err) { say(err.message || tr.err.generic); } finally { setUploading(false); }
+  };
+
+  const removeReceipt = async (r) => {
+    try { await api("DELETE", `/billing/receipts/${r.id}`); say(tr.billing.del.done); await load(data?.month); }
+    catch (err) { say(err.message || tr.err.generic); }
   };
 
   if (!data) return <section><div className="page-head"><h2>{tr.billing.title}</h2></div>{loadErr ? <ErrorState message={loadErr} onRetry={() => { setLoadErr(""); load(); }} /> : <Skeleton rows={3} />}</section>;
@@ -312,7 +345,7 @@ export default function Billing() {
       {data.receipts.length > 0 && (
         <>
           <h3 className="sec-title">{tr.billing.receipts}</h3>
-          <ul className="list">{data.receipts.map((r) => <ReceiptRow key={r.id} r={r} />)}</ul>
+          <ul className="list">{data.receipts.map((r) => <ReceiptRow key={r.id} r={r} onDelete={removeReceipt} />)}</ul>
         </>
       )}
       <div className={"toast" + (toast ? " show" : "")} role="status">{toast}</div>

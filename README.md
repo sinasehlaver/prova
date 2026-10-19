@@ -139,6 +139,10 @@ from overpaying), the page shows how much of that month it would cover, e.g.
 "next month's dues are already covered by your credit". That's a preview; it
 turns into "paid" once an admin applies the credit.
 
+You can pick any month directly from the month picker (month and year). An
+uploaded dekont you sent by mistake can be deleted, as long as an admin hasn't
+approved it or recorded it themselves.
+
 ### Raising an alert
 
 Something out of stock or broken in the room (picks, cables, the amp)? Go to

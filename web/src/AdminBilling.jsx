@@ -5,7 +5,7 @@ import { ChevronLeftIcon } from "./icons.jsx";
 import Sheet from "./Sheet.jsx";
 import { MonthPicker, Select } from "./Controls.jsx";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
-import { CheckG, CreditCard, CreditCover, DashG, DebtCard, ItemList, KalanCard, MonthNav, PaySummary, StatusPill, UploadG, chargeName, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
+import { CheckG, CreditCard, CreditCover, DashG, DebtCard, ItemList, KalanCard, MonthNav, DeleteReceipt, PaySummary, StatusPill, UploadG, chargeName, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
 
 const A = tr.admin;
 const fmtDateTimeShort = (ms) => new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Europe/Istanbul" }).format(ms);
@@ -181,7 +181,7 @@ function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onS
 
 /** A member's own upload, not yet reviewed = a DRAFT payment with the PDF already attached. Items = the receipt's
  *  month (from the caller when it has them, else fetched). Approve = recordPayment's allocation into this row. */
-function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, showUser, say }) {
+function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, onDelete, showUser, say }) {
   const [fetched, setFetched] = useState(null);
   const [err, setErr] = useState("");
   const load = () => { setErr(""); api("GET", `/admin/users/${r.user_id}/billing?month=${r.month}`).then((d) => setFetched(d), (e) => setErr(e.message || tr.err.load)); };
@@ -195,6 +195,7 @@ function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, s
       <PaymentComposer items={items} elsewhere={elsewhere} receipt={r} head={head} say={say}
         onSave={({ charges, amount, note }) => onReview(r, "approve", note, { amount_try: amount, charges, month: r.month })}
         onReject={(note) => onReview(r, "reject", note)} />
+      {onDelete && <div className="row end"><DeleteReceipt onDelete={() => onDelete(r)} /></div>}
     </li>
   );
 }
@@ -204,10 +205,10 @@ function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, s
  * list), their total, what was actually paid, and what that left - kalan / surplus on other items / credit.
  * PDF only if there is one. The undo (reject) is tucked away in a disclosure. Rejected/undone ones render muted.
  */
-function ReceiptCard({ r, onReview, showUser = true, items, elsewhere, say }) {
+function ReceiptCard({ r, onReview, onDelete, showUser = true, items, elsewhere, say }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
-  if (r.status === "pending") return <PendingReceiptCard r={r} items={items} elsewhere={elsewhere} onReview={onReview} showUser={showUser} say={say} />;
+  if (r.status === "pending") return <PendingReceiptCard r={r} items={items} elsewhere={elsewhere} onReview={onReview} onDelete={onDelete} showUser={showUser} say={say} />;
   const ok = r.status === "ok";
   const review = async (action) => { setBusy(true); try { if ((await onReview(r, action, note)) !== false) setNote(""); } finally { setBusy(false); } };
   const picked = r.charges.filter((c) => c.selected !== false);
@@ -246,6 +247,7 @@ function ReceiptCard({ r, onReview, showUser = true, items, elsewhere, say }) {
             : <button type="button" className="btn good" disabled={busy} onClick={() => review("approve")}>{P.redo}</button>}
         </div>
       </details>}
+      {onDelete && !ok && <div className="row end"><DeleteReceipt onDelete={() => onDelete(r)} /></div>}
     </li>
   );
 }
@@ -324,6 +326,10 @@ export function Payments({ onDetail }) {
     api("GET", "/admin/receipts" + (q ? "?" + q : "")).then(setList, (e) => setLoadErr(e.message || tr.err.load));
   };
   useEffect(load, [f, month, allMonths]); // eslint-disable-line react-hooks/exhaustive-deps
+  const del = async (r) => {
+    try { await api("DELETE", `/admin/receipts/${r.id}`); setList((l) => l.filter((x) => x.id !== r.id)); loadOv(); say(A.receiptDeleted); }
+    catch (e) { say(e.message || tr.err.generic); }
+  };
   const review = async (r, action, note, extra) => {
     try {
       const upd = await api("POST", `/admin/receipts/${r.id}/${action}`, { note, ...extra });
@@ -351,7 +357,7 @@ export function Payments({ onDetail }) {
       <label className="check"><input type="checkbox" checked={allMonths} onChange={(e) => setAllMonths(e.target.checked)} /><span>{A.allMonths}</span></label>
       {!list && (loadErr ? <ErrorState message={loadErr} onRetry={load} /> : <Skeleton rows={3} />)}
       {list && !list.length && <EmptyState title={tr.empty.receipts[0]} body={tr.empty.receipts[1]} />}
-      <ul className="list">{(list || []).map((r) => <ReceiptCard key={r.id} r={r} onReview={review} say={say} />)}</ul>
+      <ul className="list">{(list || []).map((r) => <ReceiptCard key={r.id} r={r} onReview={review} onDelete={del} say={say} />)}</ul>
       {toast}
     </section>
   );
@@ -392,6 +398,10 @@ export function UserDetail({ user, onBack }) {
   useEffect(() => { load(); api("GET", `/admin/users/${user.id}/reservations`).then(setRes, () => {}); }, [user.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const waive = async (it, waived) => { try { await api("POST", `/admin/charges/${it.id}/waive`, { waived }); say(waived ? A.waived : A.unwaive); load(data.month); } catch (e) { say(e.message); } };
+  const del = async (r) => {
+    try { await api("DELETE", `/admin/receipts/${r.id}`); say(A.receiptDeleted); await load(data.month); }
+    catch (e) { say(e.message || tr.err.generic); }
+  };
   const review = async (r, action, note, extra) => {
     try { await api("POST", `/admin/receipts/${r.id}/${action}`, { note, ...extra }); say(action === "approve" ? A.approved : A.rejected); await load(data.month); }
     catch (e) { say(e.message); return false; }
@@ -456,7 +466,7 @@ export function UserDetail({ user, onBack }) {
           <h3 className="sec-title">{A.payments}</h3>
           {!data.receipts.length && <EmptyState title={tr.empty.receipts[0]} body={tr.empty.receipts[1]} />}
           <ul className="list">{data.receipts.map((r) => (
-            <ReceiptCard key={r.id} r={r} onReview={review} showUser={false} say={say}
+            <ReceiptCard key={r.id} r={r} onReview={review} onDelete={del} showUser={false} say={say}
               items={r.month === data.month ? data.items : undefined} elsewhere={r.month === data.month ? data.other_open : undefined} />
           ))}</ul>
         </>

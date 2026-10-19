@@ -234,7 +234,7 @@ export async function parseReceipt(db, { buffer, expectedTry = 0 }) {
  * status='ok'; a pending row has no receipt_charges rows to begin with) until an admin reviews it via reviewReceipt.
  * verifyReceipt is called purely to capture text/amounts/bank_ref for later reference - never to decide anything.
  */
-export const submitReceipt = (db, user, { buffer, filename = null, now = Date.now() }) => serial(async () => {
+export const submitReceipt = (db, user, { buffer, filename = null, month = currentMonth(), now = Date.now() }) => serial(async () => {
   if (!buffer?.length || buffer.subarray(0, 5).toString("latin1") !== "%PDF-") throw fail(400, "Lütfen dekontu PDF olarak yükle");
   let v = null;
   try { v = await verifyReceipt({ buffer, expectedTry: 0 }); } catch { /* best-effort metadata only, never blocks the upload */ }
@@ -246,7 +246,7 @@ export const submitReceipt = (db, user, { buffer, filename = null, now = Date.no
   const { lastInsertRowid } = await db.execute({
     sql: `INSERT INTO receipts (user_id, month, filename, pdf, sha256, text, amounts_json, bank_ref, status, expected_try, found_try, uploaded_at)
           VALUES (?,?,?,?,?,?,?,?, 'pending', NULL, ?, ?)`,
-    args: [user.id, currentMonth(), String(filename ?? "").slice(0, 120) || null, buffer, sha,
+    args: [user.id, month, String(filename ?? "").slice(0, 120) || null, buffer, sha,
       v ? v.text.slice(0, 20000) : null, JSON.stringify(v?.foundAmounts ?? []), v?.bankRef ?? null, v?.found ?? null, now],
   });
   return Number(lastInsertRowid);
@@ -398,6 +398,30 @@ export const reviewReceipt = (db, id, action, note, extra = {}, now = Date.now()
       })).rows;
       for (const c of cs) if (Number(c.covered) < c.amount_try) await tx.execute({ sql: "UPDATE charges SET paid_receipt_id = NULL, paid_by = NULL WHERE id = ?", args: [c.id] });
     }
+    await tx.commit();
+  } catch (e) {
+    await tx.rollback().catch(() => {});
+    throw e;
+  } finally {
+    tx.close();
+  }
+});
+
+/**
+ * Delete a dekont. Member (`userId` set): own receipt only (404 otherwise), never an admin-recorded one.
+ * Both: an 'ok' receipt (money allocated) must be undone (rejected) first -> 409, so credit/coverage stay consistent.
+ * pending/mismatch hold no allocation, but their receipt_charges rows (FK) and any stray paid_receipt_id go with them.
+ */
+export const deleteReceipt = (db, id, { userId = null } = {}) => serial(async () => {
+  const r = (await db.execute({ sql: "SELECT id, user_id, status, admin_note FROM receipts WHERE id = ?", args: [id] })).rows[0];
+  if (!r || (userId != null && r.user_id !== userId)) throw fail(404, "Dekont bulunamadı");
+  if (r.status === "ok") throw fail(409, userId != null ? "Onaylanmış dekont silinemez; yöneticiden ödemeyi geri almasını iste" : "Önce ödemeyi geri al (dekontu reddet), sonra sil");
+  if (userId != null && String(r.admin_note ?? "").startsWith("Yönetici kaydetti")) throw fail(409, "Yöneticinin kaydettiği dekont silinemez");
+  const tx = await db.transaction("write");
+  try {
+    await tx.execute({ sql: "UPDATE charges SET paid_receipt_id = NULL, paid_by = NULL WHERE paid_receipt_id = ?", args: [id] });
+    await tx.execute({ sql: "DELETE FROM receipt_charges WHERE receipt_id = ?", args: [id] });
+    await tx.execute({ sql: "DELETE FROM receipts WHERE id = ?", args: [id] });
     await tx.commit();
   } catch (e) {
     await tx.rollback().catch(() => {});
