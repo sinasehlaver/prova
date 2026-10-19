@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { bootstrapId, requireAdmin, newToken, setSessionCookie, normEmail } from "../lib/auth.mjs";
 import { currentMonth } from "../lib/tz.mjs";
+import { isMonth, FEE_MIN_MONTH } from "../lib/billing.mjs";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -106,14 +107,25 @@ export default ({ db }) => {
       newEmail = email;
     }
 
+    // Billing start (admin only: this whole router is requireAdmin). YYYY-MM within FEE_MIN_MONTH..current month; earlier or
+    // later than before is fine. Existing charges are never deleted: moving it later leaves already-created rows in place;
+    // moving it earlier makes the past months' rent materialise on the next billing read (ensureMonth).
+    let newJoined = u.joined_month;
+    if (b.joined_month !== undefined) {
+      if (!isMonth(b.joined_month) || b.joined_month < FEE_MIN_MONTH || b.joined_month > currentMonth())
+        return res.status(400).json({ error: "Geçersiz faturalama başlangıcı" });
+      newJoined = b.joined_month;
+    }
+
     await db.execute({
-      sql: "UPDATE users SET active = ?, name = ?, phone = ?, role = ?, email = ? WHERE id = ?",
+      sql: "UPDATE users SET active = ?, name = ?, phone = ?, role = ?, email = ?, joined_month = ? WHERE id = ?",
       args: [
         b.active === undefined ? u.active : b.active ? 1 : 0,
         b.name?.trim() || u.name,
         b.phone === undefined ? u.phone : String(b.phone).trim() || null,
         newRole,
         newEmail,
+        newJoined,
         u.id,
       ],
     });

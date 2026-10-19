@@ -288,3 +288,12 @@ a.link:hover { text-decoration: underline; filter: brightness(1.1); }
 .mr-chev { width: 18px; height: 18px; flex: none; transition: transform 300ms cubic-bezier(.22,.61,.36,1); }
 .mr-month.open .mr-chev { transform: rotate(90deg); }
 .mr-month .plain-list { border-top: 1px solid var(--line); }
+
+/* collapsible sections / cards in the admin per-user detail */
+.fold-h { margin: var(--s-4) 0 var(--s-2); }
+.fold-toggle { display: flex; align-items: center; gap: var(--s-2); min-height: 2.5rem; padding: 0; background: none; border: 0; color: var(--text); font: inherit; cursor: pointer; text-align: left; transition: color 160ms cubic-bezier(.22,.61,.36,1), transform 120ms cubic-bezier(.22,.61,.36,1); }
+.fold-toggle:hover { color: var(--accent); }
+.fold-toggle:active { transform: scale(.98); }
+.fold-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-1, 6px); }
+.fold-toggle small { color: var(--muted); margin-left: var(--s-2); }
+.fold-toggle .mr-chev { width: 1.1rem; height: 1.1rem; flex: none; transition: transform 160ms cubic-bezier(.22,.61,.36,1); }

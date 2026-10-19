@@ -173,7 +173,9 @@ Everything above, plus, under **Yönetim** (Admin):
   "Kaydedildi" card: covered items, their total, the paid amount, the result,
   and the PDF if there is one. Member-uploaded dekonts show up as the same
   kind of draft ("Onay bekliyor") — pick the items + amount and approve, or
-  reject with a reason.
+  reject with a reason. A member's **Faturalama başlangıcı** (billing start, on
+  their page) sets the first billed month; moving it earlier adds the missed months
+  as debt, moving it later leaves existing charges alone.
 - **Ücretler** — set the monthly dues and per-person booking fee for any month
   from January 2025 on (edit a month from its **Düzenle** button). A change
   re-prices that month's unpaid charges only; paid, partly paid and waived

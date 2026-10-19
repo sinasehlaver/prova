@@ -109,6 +109,26 @@ export function KalanCard({ data }) {
   );
 }
 
+/** Read-only list of REAL unpaid items from months before the viewed one (payload other_open), grouped by month. */
+export function PastOpen({ data, admin = false }) {
+  const past = (data.other_open ?? []).filter((i) => i.id != null && i.month < data.month);
+  if (!past.length) return null;
+  const P = tr.billing.past;
+  const months = [...new Set(past.map((i) => i.month))];
+  return (
+    <section aria-label={P.title}>
+      <h3 className="sec-title">{P.title}</h3>
+      <p className="hint">{admin ? P.hintAdmin : P.hint}</p>
+      {months.map((m) => (
+        <div key={m}>
+          <div className="muted small">{monthLabel(m)}</div>
+          <ItemList items={past.filter((i) => i.month === m)} />
+        </div>
+      ))}
+    </section>
+  );
+}
+
 /**
  * Cumulative unpaid over all months up to today (payload debt_try / debt_months), per month; tapping a month opens it.
  * Hidden unless some of the debt sits in a month other than the one being viewed (otherwise KalanCard says it all).
@@ -329,6 +349,7 @@ export default function Billing() {
 
       <h3 className="sec-title">{tr.billing.items}</h3>
       <ItemList items={data.items} empty={data.future ? tr.billing.future.empty : undefined} />
+      <PastOpen data={data} />
 
       {/* two ways to pay, both admin-reviewed - nothing is decided automatically either way */}
       <section className="card howto" aria-label={tr.billing.howTitle}>

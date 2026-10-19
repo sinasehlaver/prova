@@ -3,7 +3,7 @@ import { api, apiUpload } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon } from "./icons.jsx";
 import Sheet from "./Sheet.jsx";
-import { MonthPicker, Select } from "./Controls.jsx";
+import { ConfirmSheet, MonthPicker, Select } from "./Controls.jsx";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
 import { CheckG, CreditCard, CreditCover, DashG, DebtCard, ItemList, KalanCard, MonthNav, DeleteReceipt, PaySummary, StatusPill, UploadG, chargeName, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
 
@@ -205,8 +205,9 @@ function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, o
  * list), their total, what was actually paid, and what that left - kalan / surplus on other items / credit.
  * PDF only if there is one. The undo (reject) is tucked away in a disclosure. Rejected/undone ones render muted.
  */
-function ReceiptCard({ r, onReview, onDelete, showUser = true, items, elsewhere, say }) {
+function ReceiptCard({ r, onReview, onDelete, showUser = true, items, elsewhere, say, foldable }) {
   const [note, setNote] = useState("");
+  const [open, setOpen] = useState(true);
   const [busy, setBusy] = useState(false);
   if (r.status === "pending") return <PendingReceiptCard r={r} items={items} elsewhere={elsewhere} onReview={onReview} onDelete={onDelete} showUser={showUser} say={say} />;
   const ok = r.status === "ok";
@@ -216,10 +217,12 @@ function ReceiptCard({ r, onReview, onDelete, showUser = true, items, elsewhere,
   return (
     <li className={"card pay-card a-rcpt " + (ok ? "saved" : "void")}>
       <div className="pay-head">
-        <span><b>{showUser ? r.user_name : monthLabel(r.month)}</b>{showUser && <span className="muted small"> · {monthLabel(r.month)}</span>}</span>
+        {foldable ? <button type="button" className="fold-toggle" aria-expanded={open} onClick={() => setOpen(!open)}><Chev open={open} /><b>{monthLabel(r.month)}</b>{!open && <small>{fmtTRY(r.paid_try ?? r.expected_try ?? 0)}</small>}</button>
+          : <span><b>{showUser ? r.user_name : monthLabel(r.month)}</b>{showUser && <span className="muted small"> · {monthLabel(r.month)}</span>}</span>}
         {ok ? <span className="pill ok"><CheckG />{P.savedPill}</span>
           : r.admin_note != null ? <span className="pill"><DashG />{A.rejected}</span> : <StatusPill flag={r.status} />}
       </div>
+      <div hidden={foldable && !open}>
       <div className="muted small">{fmtDateTimeShort(r.uploaded_at)}{r.bank_ref ? ` · ${A.bankRef}: ${r.bank_ref}` : ""}</div>
       {!ok && <p className="rcpt-msg">{r.message}</p>}
       {picked.length > 0 && (
@@ -248,6 +251,7 @@ function ReceiptCard({ r, onReview, onDelete, showUser = true, items, elsewhere,
         </div>
       </details>}
       {onDelete && !ok && <div className="row end"><DeleteReceipt onDelete={() => onDelete(r)} /></div>}
+      </div>
     </li>
   );
 }
@@ -378,8 +382,48 @@ function RecordPayment({ userId, month, items, elsewhere, credit, onSaved, say }
     say(out.duplicate ? P.dupWarn : P.saved);
     await onSaved();
   };
-  return <PaymentComposer items={items} elsewhere={elsewhere} credit={credit} head={<h3>{P.title}</h3>} onSave={save} say={say} />;
+  return <PaymentComposer items={items} elsewhere={elsewhere} credit={credit} head={null} onSave={save} say={say} />;
 }
+
+function Chev({ open }) {
+  return <svg className="mr-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" style={{ transform: open ? "rotate(90deg)" : undefined }}><path d="M9 6l6 6-6 6" /></svg>;
+}
+
+/** Section with a chevron header. Children stay mounted when collapsed (`hidden`), so a typed draft survives. */
+function Collapse({ title, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  const id = useId();
+  return (
+    <section className="fold">
+      <h3 className="sec-title fold-h"><button type="button" className="fold-toggle" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}><Chev open={open} />{title}</button></h3>
+      <div id={id} hidden={!open}>{children}</div>
+    </section>
+  );
+}
+
+/** Admin: set the month a user is billed from (users.joined_month). Existing charges are never deleted by moving it. */
+function BillingStart({ user, say, onChanged }) {
+  const M = tr.members;
+  const [cur, setCur] = useState(user.joined_month);
+  const [pick, setPick] = useState(null);
+  const save = async () => {
+    try {
+      const u = await api("PATCH", `/users/${user.id}`, { joined_month: pick });
+      setCur(u.joined_month); say(M.billingStartSet); onChanged();
+    } catch (e) { say(e.message || tr.err.generic); }
+  };
+  return (
+    <section className="card" aria-label={M.billingStart}>
+      <div className="row wrap">
+        <span className="muted small">{M.billingStart}</span>
+        <MonthPicker ariaLabel={M.billingStart} value={pick ?? cur} min="2025-01" max={nowMonth()} onChange={setPick} />
+      </div>
+      <p className="hint">{M.billingStartHint}</p>
+      {pick && pick !== cur && <ConfirmGate onNo={() => setPick(null)} onYes={save} text={M.billingStartConfirm(user.name, monthLabel(pick))} label={M.billingStartSave} />}
+    </section>
+  );
+}
+const ConfirmGate = ({ text, label, onYes, onNo }) => <ConfirmSheet title={tr.members.billingStart} body={text} confirmLabel={label} onClose={onNo} onConfirm={onYes} />;
 
 /** Per-user payments + reservations (admin). */
 export function UserDetail({ user, onBack }) {
@@ -431,6 +475,7 @@ export function UserDetail({ user, onBack }) {
       {!data && (loadErr ? <ErrorState message={loadErr} onRetry={() => load()} /> : <Skeleton rows={3} />)}
       {data && (
         <>
+          <BillingStart user={user} say={say} onChanged={() => load()} />
           <MonthNav month={data.month} months={data.months} onChange={load} />
           <KalanCard data={data} />
           <DebtCard data={data} onPick={load} admin />
@@ -462,16 +507,19 @@ export function UserDetail({ user, onBack }) {
             </div>
             <div className="row end"><button className="btn primary" disabled={!adj.amount || !adj.label.trim()}>{A.adjustAdd}</button></div>
           </form>
-          <RecordPayment userId={user.id} month={data.month} items={data.items} elsewhere={data.other_open} credit={data.credit.balance_try} say={say} onSaved={() => load(data.month)} />
-          <h3 className="sec-title">{A.payments}</h3>
+          <Collapse title={P.title}>
+            <RecordPayment userId={user.id} month={data.month} items={data.items} elsewhere={data.other_open} credit={data.credit.balance_try} say={say} onSaved={() => load(data.month)} />
+          </Collapse>
+          <Collapse title={A.payments}>
           {!data.receipts.length && <EmptyState title={tr.empty.receipts[0]} body={tr.empty.receipts[1]} />}
           <ul className="list">{data.receipts.map((r) => (
-            <ReceiptCard key={r.id} r={r} onReview={review} onDelete={del} showUser={false} say={say}
+            <ReceiptCard key={r.id} r={r} onReview={review} onDelete={del} showUser={false} say={say} foldable
               items={r.month === data.month ? data.items : undefined} elsewhere={r.month === data.month ? data.other_open : undefined} />
           ))}</ul>
+          </Collapse>
         </>
       )}
-      <h3 className="sec-title">{A.reservations}</h3>
+      <Collapse title={A.reservations} defaultOpen={false}>
       {res && !res.length && <EmptyState title={tr.empty.reservations[0]} body={tr.empty.reservations[1]} />}
       {res && res.length > 0 && (
         <ul className="card plain-list">
@@ -487,6 +535,7 @@ export function UserDetail({ user, onBack }) {
           </li>
         </ul>
       )}
+      </Collapse>
       {toast}
     </section>
   );
