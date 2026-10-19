@@ -413,9 +413,9 @@ function BillingStart({ user, say, onChanged }) {
     } catch (e) { say(e.message || tr.err.generic); }
   };
   return (
-    <section className="card" aria-label={M.billingStart}>
-      <div className="row wrap">
-        <span className="muted small">{M.billingStart}</span>
+    <section className="card bill-start" aria-label={M.billingStart}>
+      <div className="bill-start-row">
+        <span className="bill-start-label">{M.billingStart}</span>
         <MonthPicker ariaLabel={M.billingStart} value={pick ?? cur} min="2025-01" max={nowMonth()} onChange={setPick} />
       </div>
       <p className="hint">{M.billingStartHint}</p>
@@ -475,7 +475,6 @@ export function UserDetail({ user, onBack }) {
       {!data && (loadErr ? <ErrorState message={loadErr} onRetry={() => load()} /> : <Skeleton rows={3} />)}
       {data && (
         <>
-          <BillingStart user={user} say={say} onChanged={() => load()} />
           <MonthNav month={data.month} months={data.months} onChange={load} />
           <KalanCard data={data} />
           <DebtCard data={data} onPick={load} admin />
@@ -535,6 +534,9 @@ export function UserDetail({ user, onBack }) {
           </li>
         </ul>
       )}
+      </Collapse>
+      <Collapse title={tr.members.settings} defaultOpen={false}>
+        <BillingStart user={user} say={say} onChanged={() => load(data?.month)} />
       </Collapse>
       {toast}
     </section>

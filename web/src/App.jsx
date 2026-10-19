@@ -13,7 +13,7 @@ import { Boot, ErrorState, Skeleton } from "./States.jsx";
 
 const TABS = [
   { id: "calendar", Icon: CalendarIcon },
-  { id: "myRes", Icon: ListIcon },
+  { id: "myRes", Icon: ListIcon, booker: true },
   { id: "payments", Icon: WalletIcon },
   { id: "alerts", Icon: BellIcon },
   { id: "admin", Icon: ShieldIcon, admin: true },
@@ -240,7 +240,7 @@ function AdminGate({ me, recheck, children }) {
 
 function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
   const [profile, setProfile] = useState(false);
-  const tabs = TABS.filter((t) => !t.admin || me.role === "admin");
+  const tabs = TABS.filter((t) => (!t.admin || me.role === "admin") && (!t.booker || me.role !== "listener"));
   const active = tabs.find((t) => t.id === tab) ? tab : "calendar";
   const pendingCount = usePendingCount(me.role === "admin");
   // the URL hash always names the tab that is actually rendered (no #admin for a non-admin)

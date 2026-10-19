@@ -150,6 +150,7 @@ export const tr = {
     signedUp: "Kayıt",
     inactive: "Pasif",
     since: "Katılım",
+    settings: "Üye ayarları",
     billingStart: "Faturalama başlangıcı",
     billingStartHint: "Aidat bu aydan itibaren işler. Daha geriye alırsan geçmiş aylar borç olarak eklenir; ileri alırsan mevcut kalemler silinmez.",
     billingStartConfirm: (name, label) => `${name} için faturalama başlangıcı ${label} olsun mu? Mevcut kalemler silinmez.`,
