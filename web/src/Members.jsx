@@ -11,6 +11,8 @@ const ROLE_OPTS = [
   { value: "admin", label: tr.members.roleAdmin },
 ];
 
+const ROLE_OPTS_ROW = [...ROLE_OPTS, { value: "inactive", label: tr.members.inactive }];
+
 export default function Members({ me, onDetail }) {
   const [users, setUsers] = useState(null);
   const [adding, setAdding] = useState(false);
@@ -51,9 +53,12 @@ export default function Members({ me, onDetail }) {
     } catch (e) { fail(e); }
   };
 
+  // "Pasif" is a pseudo-type: PATCH active=false (reservations/charges untouched, the user just can't use the app). Any real type reactivates.
   const changeRole = async (u, newRole) => {
-    if (newRole === u.role) return;
-    try { replace(await api("PATCH", `/users/${u.id}`, { role: newRole })); say(tr.members.roleChanged); } catch (e) { fail(e); }
+    const cur = u.active ? u.role : "inactive";
+    if (newRole === cur) return;
+    const body = newRole === "inactive" ? { active: false } : { role: newRole, active: true };
+    try { replace(await api("PATCH", `/users/${u.id}`, body)); say(tr.members.roleChanged); } catch (e) { fail(e); }
   };
 
   return (
@@ -129,7 +134,7 @@ export default function Members({ me, onDetail }) {
                 {u.id !== me.id && (
                   <label className="field-inline">
                     <span className="muted small">{tr.members.role}</span>
-                    <Select className="sm" ariaLabel={tr.members.role} value={u.role} onChange={(v) => changeRole(u, v)} options={ROLE_OPTS} />
+                    <Select className="sm" ariaLabel={tr.members.role} value={u.active ? u.role : "inactive"} onChange={(v) => changeRole(u, v)} options={ROLE_OPTS_ROW} />
                   </label>
                 )}
               </div>

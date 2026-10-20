@@ -64,7 +64,26 @@ Lost the admin link *and* the log line is gone? Reset it straight in the databas
 
 ## 4. Backups
 
-Turso free keeps 1 day of point-in-time restore only. Insurance for the money records: **Yönetim → Ayarlar → Yedek / dışa aktar** downloads a JSON (all tables incl. receipt metadata; invite tokens are omitted) and a charges CSV (`;`-separated, UTF-8 BOM, opens in Turkish Excel). Optional checkbox includes receipt PDFs as base64 (big). Do it monthly. It is a *read* backup — there is no import/restore tool; restoring means loading rows by hand or via Turso's own restore.
+Cost: **$0**. Two layers: Turso's built-in 1-day point-in-time restore (fast, last 24 h only) + a **daily encrypted full dump** by GitHub Actions (`.github/workflows/backup.yml`, 30 daily copies) stored as release assets in a **private** GitHub repo. The dump has every table incl. invite tokens and dekont PDFs, so it is AES-256-GCM encrypted (`BACKUP_KEY`); the app repo is public, so never store backups in it.
+
+**One-time setup (~10 min)**
+1. Create a private repo, e.g. `sinasehlaver/prova-backups` (empty is fine; add a README so it can hold releases).
+2. Key: `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` -> save it in your password manager (**lose it = backups are unreadable**) and as secret `BACKUP_KEY`.
+3. Read-only Turso token: `turso db tokens create prova --read-only` -> secret `BACKUP_DATABASE_AUTH_TOKEN`.
+4. Fine-grained GitHub PAT, only the backups repo, permission Contents: read/write -> secret `BACKUP_REPO_TOKEN`.
+5. Secrets in the *prova* repo (Settings -> Secrets -> Actions): `DATABASE_URL`, `BACKUP_DATABASE_AUTH_TOKEN`, `BACKUP_KEY`, `BACKUP_REPO_TOKEN`, `BACKUP_REPO` (`owner/prova-backups`).
+6. Run once: Actions -> backup -> Run workflow. Check the release appears in the backups repo. A failed daily run emails you. GitHub pauses scheduled workflows after 60 days with no repo activity - re-enable in the Actions tab if it happens.
+
+**Restore (target: minutes)**
+```sh
+gh release download backup-YYYY-MM-DD --repo owner/prova-backups      # newest good one
+turso db create prova-restored --location fra                          # must be EMPTY
+export BACKUP_KEY=...  DATABASE_URL=$(turso db show prova-restored --url)  DATABASE_AUTH_TOKEN=$(turso db tokens create prova-restored)
+node scripts/restore.mjs prova-YYYY-MM-DD.bak.enc                       # prints per-table row counts
+```
+Then set Render's `DATABASE_URL` / `DATABASE_AUTH_TOKEN` to the new DB and redeploy (the app skips migrations already recorded in the dump). Everyone stays logged in (tokens restored). Loss window = up to 24 h of bookings/payments; for a problem noticed within a day, Turso's own PITR (`turso db create prova-restored --from-db prova --timestamp <ISO>`) loses less. Restore locally first to rehearse: `DATABASE_URL=file:/tmp/r.db node scripts/restore.mjs <file>`.
+
+Also available, separately: **Yönetim -> Ayarlar -> Yedek / dışa aktar** (JSON + charges CSV, tokens omitted) - a human-readable export, *not* a restore source.
 
 ## 5. Install as an app
 

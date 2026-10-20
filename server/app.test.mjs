@@ -373,3 +373,12 @@ test("POST /api/login locks after 5 failures per e-mail (even for the right pass
   for (let i = 0; i < 65 && last !== 429; i++) last = (await t.fetch("/api/billing", { as: t.member2 })).status;
   assert.equal(last, 429);
 });
+
+test("deactivating via PATCH keeps reservations, blocks the app; a real type reactivates", async () => {
+  const mine = await t.fetch("/api/reservations/mine", { as: t.member });
+  const before = (await mine.json()).length;
+  assert.equal((await t.fetch(`/api/users/${t.member.id}`, { method: "PATCH", as: t.admin, body: { active: false } })).status, 200);
+  assert.equal((await t.fetch("/api/reservations/mine", { as: t.member })).status, 401);
+  assert.equal((await t.fetch(`/api/users/${t.member.id}`, { method: "PATCH", as: t.admin, body: { role: "member", active: true } })).status, 200);
+  assert.equal((await (await t.fetch("/api/reservations/mine", { as: t.member })).json()).length, before);
+});
