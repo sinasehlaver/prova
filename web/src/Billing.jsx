@@ -2,6 +2,7 @@
 // lib/billing.mjs / lib/payments.mjs). A member can upload a PDF; it lands as a 'pending' receipt that affects no
 // balance until an admin reviews it (AdminBilling -> Payments/UserDetail). The shared pieces below are reused there.
 import React, { useEffect, useRef, useState } from "react";
+import Fold from "./Fold.jsx";
 import usePoll from "./usePoll.js";
 import "./billing.css";
 import { api, apiUpload } from "./api.js";
@@ -118,18 +119,20 @@ export function PastOpen({ data, admin = false }) {
   if (!past.length) return null;
   const P = tr.billing.past;
   const months = [...new Set(past.map((i) => i.month))];
-  return (
-    <section aria-label={P.title}>
-      <h3 className="sec-title">{P.title}</h3>
+  const sumOf = (list) => fmtTRY(list.reduce((a, i) => a + (i.remaining_try ?? i.amount_try ?? 0), 0));
+  const body = (
+    <>
       <p className="hint">{admin ? P.hintAdmin : P.hint}</p>
-      {months.map((m) => (
-        <div key={m}>
-          <div className="muted small">{monthLabel(m)}</div>
-          <ItemList items={past.filter((i) => i.month === m)} />
-        </div>
-      ))}
-    </section>
+      {months.map((m) => {
+        const list = past.filter((i) => i.month === m);
+        return admin
+          ? <div key={m}><div className="muted small">{monthLabel(m)}</div><ItemList items={list} /></div>
+          : <Fold key={m} title={monthLabel(m)} sum={sumOf(list)} defaultOpen={false} className="fold-month"><ItemList items={list} /></Fold>;
+      })}
+    </>
   );
+  if (admin) return <section aria-label={P.title}><h3 className="sec-title">{P.title}</h3>{body}</section>;
+  return <Fold title={P.title} sum={sumOf(past)} defaultOpen={false}>{body}</Fold>;
 }
 
 /**
@@ -141,20 +144,23 @@ export function DebtCard({ data, onPick, admin = false }) {
   if (!(data.debt_try > 0) || !rows.some((m) => m.month !== data.month)) return null;
   const D = tr.billing.debt;
   const title = admin ? D.titleAdmin : D.title;
+  const list = (
+    <>
+      <p className="hint">{admin ? D.hintAdmin : D.hint}</p>
+        <ul className="debt-list">
+          {rows.map((m) => (
+            <li key={m.month}>
+              <button type="button" className={"debt-row" + (m.month === data.month ? " cur" : "")} onClick={() => onPick(m.month)} aria-label={`${D.open} ${monthLabel(m.month)}`}>
+                <span>{monthLabel(m.month)}</span><span className="amount">{fmtTRY(m.remaining_try)}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+    </>
+  );
   return (
     <section className="card debt" aria-label={title}>
-      <div className="debt-label">{title}</div>
-      <div className="debt-amount amount">{fmtTRY(data.debt_try)}</div>
-      <p className="hint">{admin ? D.hintAdmin : D.hint}</p>
-      <ul className="debt-list">
-        {rows.map((m) => (
-          <li key={m.month}>
-            <button type="button" className={"debt-row" + (m.month === data.month ? " cur" : "")} onClick={() => onPick(m.month)} aria-label={`${D.open} ${monthLabel(m.month)}`}>
-              <span>{monthLabel(m.month)}</span><span className="amount">{fmtTRY(m.remaining_try)}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
+      {admin ? <><div className="debt-label">{title}</div><div className="debt-amount amount">{fmtTRY(data.debt_try)}</div>{list}</> : <Fold title={title} defaultOpen={false} sum={fmtTRY(data.debt_try)} className="fold-debt">{list}</Fold>}
     </section>
   );
 }
@@ -385,8 +391,9 @@ export default function Billing() {
       <CreditCard credit={data.credit} />
       <PayTo pay_to={data.pay_to} onCopied={() => say(tr.billing.copied)} />
 
-      <h3 className="sec-title">{tr.billing.items}</h3>
-      <ItemList items={data.items} empty={data.future ? tr.billing.future.empty : undefined} />
+      <Fold title={tr.billing.items} defaultOpen={false} sum={fmtTRY(data.items.reduce((a, i) => a + (i.amount_try ?? 0), 0))}>
+        <ItemList items={data.items} empty={data.future ? tr.billing.future.empty : undefined} />
+      </Fold>
       <PastOpen data={data} />
 
       {/* two ways to pay, both admin-reviewed - nothing is decided automatically either way */}

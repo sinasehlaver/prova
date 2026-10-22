@@ -5,6 +5,8 @@ import { fmtTRY } from "./Billing.jsx";
 import { NewSheet } from "./Calendar.jsx";
 import { ChevronRightIcon } from "./icons.jsx";
 import Sheet from "./Sheet.jsx";
+import CopyBtn from "./CopyBtn.jsx";
+import { reservationText } from "./resText.js";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
 import { D, EDIT_CUTOFF_MS, H, dayStart } from "./time.js";
 
@@ -34,6 +36,7 @@ export default function MyReservations() {
   const [sure, setSure] = useState(null);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(() => new Set());
+  const [openY, setOpenY] = useState(() => new Set()); // years, all collapsed by default
   const [edit, setEdit] = useState(null); // { r, maxPeople, minDay, holds }
   const [toast, setToast] = useState("");
   const [ask, setAsk] = useState(null); // { r, reason } past-reservation deletion request
@@ -61,13 +64,17 @@ export default function MyReservations() {
   const groups = useMemo(() => {
     const m = new Map();
     for (const r of rows || []) { if (!m.has(r.month)) m.set(r.month, []); m.get(r.month).push(r); }
-    return [...m.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+    const ms = [...m.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+    const y = new Map();
+    for (const e of ms) { const k = e[0].slice(0, 4); if (!y.has(k)) y.set(k, []); y.get(k).push(e); }
+    return [...y.entries()];
   }, [rows]);
 
   if (err && !rows) return <ErrorState message={err} onRetry={load} />;
   if (!rows) return <Skeleton rows={4} />;
   const now = Date.now();
   const toggle = (m) => setOpen((o) => { const n = new Set(o); if (n.has(m)) n.delete(m); else n.add(m); return n; });
+  const toggleY = (y) => setOpenY((o) => { const n = new Set(o); if (n.has(y)) n.delete(y); else n.add(y); return n; });
   const item = (r) => {
     const can = !r.cancelled_at && r.start_ms - EDIT_CUTOFF_MS >= now;
     const locked = !r.cancelled_at && !can && r.start_ms > now;
@@ -75,6 +82,9 @@ export default function MyReservations() {
       <li key={r.id} className={r.cancelled_at ? "gone" : ""}>
         <span>
           {fmt(r.start_ms)}–{hh(r.end_ms)}{r.note ? ` · ${r.note}` : ""} · {tr.cal.peopleCount(r.people)}{r.cancelled_at ? ` (${T.cancelled})` : ""}
+        </span>
+        <span className="mr-act">
+          {!r.cancelled_at && <CopyBtn text={reservationText(r)} />}
           {can && (sure === r.id ? (
             <> <button className="btn sm danger solid" disabled={busy} onClick={() => cancel(r.id)}>{tr.cal.cancelYes}</button> <button className="btn sm" onClick={() => setSure(null)}>{tr.cal.cancel}</button></>
           ) : (
@@ -95,16 +105,30 @@ export default function MyReservations() {
       {err && <div className="notice" role="alert">{err}</div>}
       {!rows.length && <EmptyState title={T.empty[0]} body={T.empty[1]} />}
       {rows.length > 0 && <div className="card mr-grand"><Totals rows={rows} label={T.total} /></div>}
-      {groups.map(([m, list]) => (
-        <div key={m} className={"card mr-month" + (open.has(m) ? " open" : "")}>
-          <button className="mr-head" aria-expanded={open.has(m)} onClick={() => toggle(m)}>
-            <ChevronRightIcon className="mr-chev" aria-hidden="true" />
-            <span className="mr-title">{monthLabel(m)} <span className="muted small">· {T.count(list.filter((r) => !r.cancelled_at).length)}</span></span>
-            <Totals rows={list} />
-          </button>
-          {open.has(m) && <ul className="plain-list">{list.map(item)}</ul>}
-        </div>
-      ))}
+      {groups.map(([y, months]) => {
+        const all = months.flatMap(([, l]) => l);
+        return (
+          <div key={y} className={"mr-year" + (openY.has(y) ? " open" : "")}>
+            <button className="sec-title mr-yhead" aria-expanded={openY.has(y)} onClick={() => toggleY(y)}>
+              <ChevronRightIcon className="mr-chev" aria-hidden="true" />
+              <span>{y} <span className="small">· {T.count(all.filter((r) => !r.cancelled_at).length)}</span></span>
+              <Totals rows={all} />
+            </button>
+            <div hidden={!openY.has(y)}>
+              {months.map(([m, list]) => (
+                <div key={m} className={"card mr-month" + (open.has(m) ? " open" : "")}>
+                  <button className="mr-head" aria-expanded={open.has(m)} onClick={() => toggle(m)}>
+                    <ChevronRightIcon className="mr-chev" aria-hidden="true" />
+                    <span className="mr-title">{monthLabel(m)} <span className="muted small">· {T.count(list.filter((r) => !r.cancelled_at).length)}</span></span>
+                    <Totals rows={list} />
+                  </button>
+                  {open.has(m) && <ul className="plain-list">{list.map(item)}</ul>}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
       {edit && (
         <NewSheet edit={edit.r} day={dayStart(edit.r.start_ms)} hour={Math.round((edit.r.start_ms - dayStart(edit.r.start_ms)) / H)}
           hours={Math.round((edit.r.end_ms - edit.r.start_ms) / H)} res={[]} holds={edit.holds} now={now} maxPeople={edit.maxPeople}

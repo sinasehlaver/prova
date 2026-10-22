@@ -115,7 +115,7 @@ Go to the **Takvim** (Calendar) tab.
   ones stay. For a past booking you can instead ask an admin to delete it
   (**Silinmesini iste**, optional reason); the admin approves or rejects it.
 - **Rezervasyonlarım** (My reservations) lists your own bookings grouped by
-  month (newest first, collapsed by default), with paid/unpaid totals per month
+  year, then month (newest first, collapsed by default), with paid/unpaid totals per month
   and overall. You can edit or cancel a booking from there until 1 hour before it starts (the buttons disappear after that). The calendar's booking view has **Düzenle** for the same case.
 
 ### Paying your dues
@@ -166,7 +166,7 @@ Everything above, plus, under **Yönetim** (Admin):
   community at a glance (the observer account created at first boot isn't a
   member: it's never billed and isn't counted here or in Ekonomi); drill into any member to waive a charge, add an
   extra one (**Ek ücret ekle**), then record a payment (**Ödeme kaydet**). The
-  payment form is a draft until you press **Ödemeyi onayla**: tick which open
+  payment form opens in a window with a sticky summary bar; it's a draft until you press **Ödemeyi onayla**: tick which open
   items it covers, type the amount actually paid, and it shows live what's
   left to pay or what the community will owe the member; a dekont PDF is
   optional (cash is fine). One payment can cover items from other months too
@@ -184,13 +184,13 @@ Everything above, plus, under **Yönetim** (Admin):
 - **İstekler** — deletion requests for past bookings, approve (the booking is
   cancelled and its unpaid charges voided) or reject. The count shows on the Yönetim tab.
 - **Ücretler** — set the monthly dues and per-person booking fee for any month
-  from January 2025 on (edit a month from its **Düzenle** button). A change
+  from January 2025 on (edit a month from its **Düzenle** button). Years are collapsed by default. A change
   re-prices that month's unpaid charges only; paid, partly paid and waived
   items keep their amount.
 - **Ekonomi** — income vs. cost chart for the last 6 months, and a suggested
-  fee increase if costs have outpaced what's coming in.
+  fee increase if costs have outpaced what's coming in (the suggestion is hidden while it's in beta).
 - **Uyarı türleri** — add/edit/reorder the alert buttons.
-- **Ayarlar** — the community's IBAN and account holder name, plus a full
+- **Ayarlar** — the community's IBAN (masked until you press **Göster**) and account holder name, plus a full
   data export (JSON/CSV) for backups.
 
 ## Testing

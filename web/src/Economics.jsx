@@ -103,6 +103,9 @@ function Chart({ months }) {
   );
 }
 
+// beta: price suggestion is vague, hidden for now (code kept)
+const SHOW_PRICE_SUGGESTION = false;
+
 function Suggestion({ s, onApply, busy }) {
   const o = s.options;
   return (
@@ -211,7 +214,7 @@ export default function Economics() {
     <section className="eco">
       <div className="page-head"><h2>{E.title}</h2></div>
       {!sum && (loadErr ? <ErrorState message={loadErr} onRetry={both} /> : <Skeleton rows={2} tall />)}
-      {sum && <Suggestion s={sum.suggestion} onApply={apply} busy={busy} />}
+      {SHOW_PRICE_SUGGESTION && sum && <Suggestion s={sum.suggestion} onApply={apply} busy={busy} />}
       {sum && <Chart months={sum.months} />}
 
       <h3 className="sec-title">{E.monthCosts}</h3>

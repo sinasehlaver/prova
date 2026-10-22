@@ -3,6 +3,8 @@ import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "./icons.jsx";
 import Sheet from "./Sheet.jsx";
+import CopyBtn from "./CopyBtn.jsx";
+import { reservationText } from "./resText.js";
 import { DatePicker, GridPick, Select } from "./Controls.jsx";
 import { ErrorState, Skeleton } from "./States.jsx";
 import { D, EDIT_CUTOFF_MS, H, dayStart, fmtDay, fmtLong, fmtTime, fmtWd, hourLabel, weekStart } from "./time.js";
@@ -218,6 +220,14 @@ export function NewSheet({ day: day0, hour, hours: initialHours, res: parentRes,
   const [err, setErr] = useState("");
   const [holdErr, setHoldErr] = useState(""); // someone else got these hours first (409 on the hold)
   const [busy, setBusy] = useState(false);
+  const [left, setLeft] = useState(null); // seconds until the success sheet closes (starts when the text is copied)
+  useEffect(() => {
+    if (left === null) return;
+    if (left <= 0) return onClose();
+    const t = setTimeout(() => setLeft(left - 1), 1000);
+    return () => clearTimeout(t);
+  }, [left]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [made, setMade] = useState(null); // shareable text of the reservation just created (success state)
   const closed = useRef(false);
 
   const free = (h) => res !== null && isFreeHour(res, holds, now, day, h);
@@ -229,7 +239,7 @@ export function NewSheet({ day: day0, hour, hours: initialHours, res: parentRes,
   // Soft hold on the picked hours while the sheet is open (others see "Rezerve ediliyor"); re-sent on every change and
   // every 45 s; released on close. A 409 means another member holds/booked them first -> friendly message + grid refresh.
   useEffect(() => {
-    if (edit || start === undefined || res === null) return; // edit: the server's overlap check is enough (own hours would clash with the hold)
+    if (edit || made || start === undefined || res === null) return; // edit: the server's overlap check is enough (own hours would clash with the hold)
     let stop = false;
     const put = () => api("POST", "/holds", { start_ms: day + start * H, hours: fit }).then(
       () => { if (closed.current) api("DELETE", "/holds").catch(() => {}); else if (!stop) setHoldErr(""); },
@@ -238,7 +248,7 @@ export function NewSheet({ day: day0, hour, hours: initialHours, res: parentRes,
     put();
     const t = setInterval(put, HOLD_REFRESH_MS);
     return () => { stop = true; clearInterval(t); };
-  }, [day, start, fit]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [day, start, fit, made]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const drop = () => fetch("/api/holds", { method: "DELETE", keepalive: true }).catch(() => {});
     window.addEventListener("pagehide", drop);
@@ -250,13 +260,21 @@ export function NewSheet({ day: day0, hour, hours: initialHours, res: parentRes,
     setBusy(true); setErr("");
     try {
       const body = { start_ms: day + start * H, hours: fit, note, people };
-      if (edit) await api("PATCH", `/reservations/${edit.id}`, body); else await api("POST", "/reservations", body);
-      onDone(edit ? tr.cal.edited : tr.cal.booked);
+      if (edit) { await api("PATCH", `/reservations/${edit.id}`, body); onDone(tr.cal.edited); }
+      else { await api("POST", "/reservations", body); setMade(reservationText({ ...body, end_ms: body.start_ms + fit * H })); onDone(null); }
     } catch (x) { setErr(x.message || tr.err.generic); onDone(null); } finally { setBusy(false); }
   };
 
   return (
-    <Sheet title={edit ? tr.cal.editTitle : tr.cal.newTitle} onClose={onClose}>
+    <Sheet title={made ? tr.cal.bookedTitle : edit ? tr.cal.editTitle : tr.cal.newTitle} onClose={onClose}>
+      {made ? (
+        <div className="made">
+          <div className="made-text"><span className="num">{made}</span>
+            <span className="made-act">{left !== null && <span className="muted small num" role="timer" aria-label={tr.cal.closesIn(left)}>{left}</span>}<CopyBtn text={made} onCopied={() => setLeft(5)} /></span>
+          </div>
+          <p className="muted small" role="status">{tr.cal.booked}</p>
+        </div>
+      ) : (<>
       <label className="field">
         <span>{tr.cal.date}</span>
         <DatePicker className="date-pick" value={isoDay(day)} min={isoDay(minDay)} max={isoDay(maxDay)}
@@ -295,6 +313,7 @@ export function NewSheet({ day: day0, hour, hours: initialHours, res: parentRes,
           </div>
         </form>
       )}
+      </>)}
     </Sheet>
   );
 }
@@ -330,6 +349,7 @@ function ViewSheet({ r, now, me, onClose, onDone, onEdit }) {
       <p className="view-time num">{tr.cal.range(fmtTime(r.start_ms), fmtTime(r.end_ms))} <span className="muted">· {tr.cal.hours((r.end_ms - r.start_ms) / H)}</span></p>
       {r.note && <p>{r.note}</p>}
       <p className="muted small">{tr.cal.peopleCount(r.people)}</p>
+      {!r.cancelled_at && <div className="made-text"><span className="num">{reservationText(r)}</span><CopyBtn text={reservationText(r)} /></div>}
       {err && <p className="notice bad" role="alert">{err}</p>}
       {can && !own && danger && (
         <form className="danger-zone" role="alertdialog" aria-labelledby="dz-title" onSubmit={(e) => { e.preventDefault(); if (armed && !busy) cancel(); }}>

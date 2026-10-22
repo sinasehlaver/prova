@@ -309,3 +309,46 @@ a.link:hover { text-decoration: underline; filter: brightness(1.1); }
 .rcpt-banner > svg { width: 22px; height: 22px; flex: none; }
 .rcpt-banner b { font-size: var(--fs-3, 1rem); }
 .rcpt-banner .small { color: var(--text, inherit); opacity: .8; }
+.mr-yhead { display: flex; align-items: center; gap: var(--s-3); width: 100%; background: none; border: 0; font: inherit; font-weight: 600; color: var(--muted); text-align: left; cursor: pointer; flex-wrap: wrap; }
+.mr-yhead > span:first-of-type { flex: 1 1 6rem; }
+.mr-year.open > .mr-yhead .mr-chev { transform: rotate(90deg); }
+.mr-year > div[hidden] { display: none; }
+.mr-month .plain-list li { align-items: center; gap: var(--s-3); }
+.mr-month .plain-list li > span:first-child { flex: 1 1 auto; min-width: 0; }
+.mr-act { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: var(--s-2); }
+.fold-h:is(h2) { margin: 0; font-size: inherit; }
+.fold-h:is(h2) .fold-toggle { font-size: var(--fs-5, 1.4rem); font-weight: 700; }
+.fold-debt > .fold-h { margin-top: 0; }
+.fold-month > .fold-h { margin: var(--s-2) 0 0; font-size: var(--fs-2, .95rem); }
+.fold .fold .fold-toggle { min-height: 2.25rem; }
+
+/* Month nav: big, tap-friendly (>=44px) — shared by admin Ödemeler, member Ödemelerim, Ekonomi */
+.mnav { gap: var(--s-3); }
+.mnav .icon-btn { width: 3rem; height: 3rem; min-width: 3rem; min-height: 3rem; border: 1px solid var(--line); border-radius: var(--r-md); }
+.mnav .icon-btn svg { width: 1.5rem; height: 1.5rem; }
+.mnav strong { font-size: var(--fs-5, 1.5rem); gap: var(--s-2); }
+.mnav .grid-pick { min-height: 3rem; padding: 0 var(--s-3); font-size: 1.25rem; font-weight: 700; }
+.mnav .grid-pick .ctl-chev { width: 16px; height: 16px; }
+.mnav .pill.future { font-size: var(--fs-1); }
+.copy-btn.ok, .copy-btn.ok:hover { color: #3bb273; }
+.copy-btn svg { animation: copy-pop 160ms ease-out; }
+@keyframes copy-pop { from { transform: scale(0.6); opacity: 0.4; } to { transform: scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .copy-btn svg { animation: none; } }
+.made { display: grid; gap: var(--s-3); }
+.made-text { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); padding: var(--s-3); border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface2); }
+.sheet-drag { touch-action: none; }
+.made-act { display: inline-flex; align-items: center; gap: var(--s-2); }
+
+/* Payment window (Sheet wide): centred dialog on wide screens, summary + Kaydet/Onayla pinned at the bottom while the items scroll */
+.sheet.sheet-wide { max-width: 40rem; }
+@media (min-width: 721px) {
+  .sheet-backdrop:has(.sheet-wide) { align-items: center; }
+  .sheet.sheet-wide { border-bottom: 1px solid var(--line); border-radius: var(--r-lg); max-height: 88vh; }
+}
+.pay-form.in-sheet { display: grid; gap: var(--s-3); }
+.pay-form.in-sheet .pay-sticky {
+  position: sticky; bottom: calc(-1 * (var(--s-5) + env(safe-area-inset-bottom))); z-index: 2; display: grid; gap: var(--s-2);
+  margin: 0 calc(-1 * var(--s-5)); padding: var(--s-3) var(--s-5) calc(var(--s-4) + env(safe-area-inset-bottom));
+  background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -6px 12px -8px rgba(0, 0, 0, .35);
+}
+.pay-form.in-sheet .embed { width: 100%; min-height: 50vh; }

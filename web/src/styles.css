@@ -535,14 +535,14 @@ input:disabled { opacity: 0.5; cursor: not-allowed; }
 .ctl-nav:focus-visible { outline: none; box-shadow: var(--ring); }
 .ctl-nav:disabled { opacity: 0.3; cursor: not-allowed; }
 .ctl-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
-.ctl-mon-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-1); }
+.ctl-mon-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--s-2); }
 .ctl-wd { text-align: center; font-size: var(--fs-1); font-weight: 600; color: var(--muted); padding-bottom: var(--s-1); }
 .ctl-day {
   min-height: 2.25rem; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--text);
   font: 500 var(--fs-2) var(--font-text); font-variant-numeric: tabular-nums; cursor: pointer;
   transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease), transform 120ms var(--ease);
 }
-.ctl-mon-grid .ctl-day { min-height: 2.75rem; text-transform: capitalize; }
+.ctl-mon-grid .ctl-day { min-height: 3.25rem; font-size: var(--fs-3); font-weight: 600; text-transform: capitalize; }
 .ctl-day:hover:not(:disabled):not(.sel) { background: var(--surface2); }
 .ctl-day:active:not(:disabled) { transform: scale(0.95); }
 .ctl-day:focus-visible { outline: none; box-shadow: var(--ring); }

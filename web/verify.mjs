@@ -95,6 +95,7 @@ try {
   await page.screenshot({ path: `${SHOTS}/calendar-sheet.png` });
   await page.click(".sheet .btn.primary");
   await page.waitForSelector(".res.mine");
+  await page.keyboard.press("Escape"); // success state (copy text) stays open until closed
   await page.waitForSelector(".sheet", { state: "detached" });
   await page.screenshot({ path: `${SHOTS}/calendar.png` });
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -102,6 +103,8 @@ try {
   await page.screenshot({ path: `${SHOTS}/calendar-week.png` });
   // Rezervasyonlarım: month groups collapsed by default, grand total, expand, edit sheet opens prefilled (only if the booking is upcoming)
   await page.click('.tab:has-text("Rezervasyonlarım")');
+  await page.waitForSelector(".mr-yhead");
+  for (const h of await page.$$(".mr-yhead")) await h.click(); // years are collapsed by default
   await page.waitForSelector(".mr-month");
   if ((await page.getAttribute(".mr-head >> nth=0", "aria-expanded")) !== "false") fail("my reservations month not collapsed by default");
   if (!(await page.textContent(".mr-grand")).includes("Genel toplam")) fail("my reservations grand total missing");
@@ -188,6 +191,7 @@ try {
   await page.locator(".kind-btn", { hasText: "Galoş yok" }).click();
   await page.waitForSelector(".alert-badge.warn");
   await page.waitForSelector(".kind-btn.open");
+  await page.click(".fold-hist .fold-toggle[aria-expanded=false]").catch(() => {}); // Geçmiş is collapsed by default
   await page.waitForSelector(".hist");
   await page.screenshot({ path: `${SHOTS}/alerts.png`, fullPage: true });
   await page.click(".tab:has-text('Takvim')");
@@ -201,6 +205,7 @@ try {
 
   // Members: list, create
   await page.click(".tab:has-text('Yönetim')");
+  await page.click(".fold-toggle[aria-expanded=false]:has-text('Üyeler')").catch(() => {}); // Üyeler fold may start collapsed
   await page.waitForSelector(".member");
   // the pending browser signup is listed first with Onayla / Reddet; approve it (no invite-link copy button anywhere)
   await page.waitForSelector(".member.pending");
@@ -236,24 +241,28 @@ try {
   await page.click(".tab:has-text('Yönetim')");
   await page.click(".subtabs button:has-text('Üyeler')");
   await page.locator(".member").filter({ has: page.locator(".member-name", { hasText: "Yönetici" }) }).getByText("Ödemeler", { exact: true }).click();
-  await page.waitForSelector(".pay-form");
+  await page.waitForSelector(".pending-compact");
+  await page.locator(".pending-compact").getByRole("button", { name: "Onayla", exact: true }).first().click(); // opens the approve window (Sheet)
+  await page.waitForSelector(".sheet .pay-form");
   await page.waitForSelector(".a-rcpt .pill:has-text('Onay bekliyor')");
   // the pending upload is itself a DRAFT payment card (items multi-select + amount + its PDF + reject)
   await page.waitForSelector(".a-rcpt.draft:has-text('Onay bekliyor') .pay-pick input[type=checkbox]");
   await page.fill(".a-rcpt:has-text('Onay bekliyor') .field input", "Yanlış üye adına yüklenmiş");
   await page.click(".a-rcpt:has-text('Onay bekliyor') .btn.danger");
   await page.waitForSelector(".a-rcpt .pill:has-text('Onay bekliyor')", { state: "detached" });
+  await page.waitForSelector(".sheet .pay-form", { state: "detached" }); // window closes after reject
   await page.waitForSelector(".a-rcpt.void"); // rejected = muted history card
   await page.screenshot({ path: `${SHOTS}/admin-pending-rejected.png`, fullPage: true });
   // per-user page order (2026-09-23): "Ek ücret ekle" before "Ödeme kaydet"; the item list above is NOT a selector
   const order = await page.evaluate(() => {
-    const adj = document.querySelector(".adj-form"), pay = document.querySelector(".pay-form:not(.a-rcpt)");
+    const adj = document.querySelector(".adj-form"), pay = [...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Ödeme kaydet");
     return adj && pay ? !!(adj.compareDocumentPosition(pay) & Node.DOCUMENT_POSITION_FOLLOWING) : null;
   });
   if (order !== true) fail("'Ek ücret ekle' must come before 'Ödeme kaydet' on the per-user page");
   if (await page.$(".bill-list input[type=checkbox]")) fail("the item list above the payment form must not be selectable any more");
   // DRAFT: nothing selected yet -> submit disabled; pick the subscription in the form's own multi-select
-  const payForm = ".pay-form:not(.a-rcpt)";
+  await page.getByRole("button", { name: "Ödeme kaydet", exact: true }).click(); // opens the payment window (Sheet)
+  const payForm = ".sheet .pay-form:not(.a-rcpt)";
   if (!(await page.$(`${payForm}.draft .pill.draft`))) fail("payment form should read as an unsaved draft");
   if (!(await page.locator(`${payForm} .btn.primary`).isDisabled())) fail("'Ödemeyi onayla' must stay disabled until an item is selected");
   await page.click(`${payForm} .pay-pick .bill-item[data-kind=subscription] input`);

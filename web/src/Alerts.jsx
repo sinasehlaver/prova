@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import Fold from "./Fold.jsx";
 import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
@@ -168,7 +169,7 @@ export default function Alerts() {
         })}
       </div>
 
-      <h3 className="sect">{tr.alerts.history}</h3>
+      <Fold title={tr.alerts.history} sum={hist.length ? `${hist.length}${more ? "+" : ""}` : null} defaultOpen={false} className="fold-hist">
       {histErr && hist.length === 0 && <ErrorState onRetry={loadFirst} />}
       {open && !histErr && hist.length === 0 && <EmptyState title={tr.empty.history[0]} body={tr.empty.history[1]} />}
       <ul className="list">
@@ -188,6 +189,7 @@ export default function Alerts() {
         ))}
       </ul>
       {more && <div className="row end"><button className="btn ghost" onClick={() => loadHist(hist[hist.length - 1].id).catch(fail)}>{tr.alerts.more}</button></div>}
+      </Fold>
       <div className={"toast" + (toast ? " show" : "")} role="status">{toast}</div>
     </section>
   );

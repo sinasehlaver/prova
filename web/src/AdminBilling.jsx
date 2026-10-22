@@ -52,7 +52,7 @@ function PdfToggle({ src, title }) {
 // rent. A surplus still only spills onto THIS month's other items (server: pickRaw), mirrored below.
 // `credit` > 0 (admin record and pending-upload approve) offers "Alacağı hesaba kat": min(credit, selected total) is deducted from the picked
 // items (any month) and the rest is paid in cash (may be 0). Server: recordPayment creditTry.
-function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onSave, onReject, say }) {
+function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onSave, onReject, onDone, say }) {
   const isOpen = (i) => (i.status === "unpaid" || i.status === "upcoming") && i.remaining_try > 0;
   const open = items.filter(isOpen);
   const away = elsewhere.filter(isOpen);
@@ -116,15 +116,15 @@ function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onS
   const run = async (fn) => {
     setBusy(true);
     try {
-      if ((await fn()) !== false) { setSel(new Set()); setNote(""); setFile(null); setUseCredit(false); typed.current = false; setAmount(""); }
+      if ((await fn()) !== false) { setSel(new Set()); setNote(""); setFile(null); setUseCredit(false); typed.current = false; setAmount(""); onDone?.(); }
     } catch (err) { say(err.message || tr.err.generic); } finally { setBusy(false); }
   };
   const submit = (e) => { e.preventDefault(); run(() => onSave({ charges: [...sel], amount: paid, note: note.trim(), file: paid > 0 ? file : null, creditTry: creditApplied })); };
 
   if (!receipt && !all.length)
-    return <section className="card pay-card pay-form draft"><div className="pay-head">{head}</div><p className="hint">{P.none}</p></section>;
+    return <section className="pay-form draft in-sheet"><div className="pay-head">{head}</div><p className="hint">{P.none}</p></section>;
   return (
-    <form className={"card pay-card pay-form draft" + (receipt ? " a-rcpt" : "")} onSubmit={submit}>
+    <form className={"pay-form draft in-sheet" + (receipt ? " a-rcpt" : "")} onSubmit={submit}>
       <div className="pay-head">
         {head}
         <span className="pill draft"><DraftG />{receipt ? tr.billing.status.pending : P.draft}</span>
@@ -152,13 +152,6 @@ function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onS
           {fromCredit && <p className="hint">{P.fromCreditHint}</p>}
         </div>
       )}
-      <PaySummary count={sel.size} sum={sum} credit={creditApplied} paid={paid} spill={spill} owed={surplus - spill}>
-        {[
-          <label key="l" htmlFor={amountId}>{creditApplied > 0 ? P.payNow : P.amount}</label>,
-          <input key="i" id={amountId} className="pay-amount" type="number" min={creditApplied > 0 ? "0" : "1"} step="1" required={!(creditApplied > 0)} inputMode="numeric" value={amount}
-            onChange={(e) => { typed.current = true; setAmount(e.target.value); }} />,
-        ]}
-      </PaySummary>
       <label className="field"><span>{P.note}</span><input maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} /></label>
       {receipt ? (receipt.has_pdf && <PdfToggle src={`/api/receipts/${receipt.id}/pdf`} title={receipt.filename} />) : paid === 0 && creditApplied > 0 ? null : (
         <div className="pay-pdf">
@@ -177,10 +170,19 @@ function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onS
           {file && blobUrl && <PdfToggle key={blobUrl} src={blobUrl} title={file.name} />}
         </div>
       )}
-      {!sel.size && all.length > 0 && <p className="hint">{P.pickFirst}</p>}
-      <div className="row end wrap">
-        {onReject && <button type="button" className="btn danger" disabled={busy} onClick={() => run(() => onReject(note.trim()))}>{A.reject}</button>}
-        <button className="btn primary" disabled={busy || !sel.size || noMoney}>{P.submit}</button>
+      <div className="pay-sticky">
+      <PaySummary count={sel.size} sum={sum} credit={creditApplied} paid={paid} spill={spill} owed={surplus - spill}>
+        {[
+          <label key="l" htmlFor={amountId}>{creditApplied > 0 ? P.payNow : P.amount}</label>,
+          <input key="i" id={amountId} className="pay-amount" type="number" min={creditApplied > 0 ? "0" : "1"} step="1" required={!(creditApplied > 0)} inputMode="numeric" value={amount}
+            onChange={(e) => { typed.current = true; setAmount(e.target.value); }} />,
+        ]}
+      </PaySummary>
+        {!sel.size && all.length > 0 && <p className="hint">{P.pickFirst}</p>}
+        <div className="row end wrap">
+          {onReject && <button type="button" className="btn danger" disabled={busy} onClick={() => run(() => onReject(note.trim()))}>{A.reject}</button>}
+          <button className="btn primary" disabled={busy || !sel.size || noMoney}>{P.submit}</button>
+        </div>
       </div>
     </form>
   );
@@ -191,6 +193,7 @@ function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onS
 function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, onDelete, showUser, say }) {
   const [fetched, setFetched] = useState(null);
   const [err, setErr] = useState("");
+  const [openSheet, setOpenSheet] = useState(false);
   const load = () => { setErr(""); api("GET", `/admin/users/${r.user_id}/billing?month=${r.month}`).then((d) => setFetched(d), (e) => setErr(e.message || tr.err.load)); };
   useEffect(() => { load(); }, [r.user_id, r.month]); // eslint-disable-line react-hooks/exhaustive-deps
   const items = given ?? fetched?.items;
@@ -198,17 +201,20 @@ function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, o
   const head = <span><b>{showUser ? r.user_name : monthLabel(r.month)}</b>{showUser && <span className="muted small"> · {monthLabel(r.month)}</span>}<span className="muted small"> · {fmtDateTimeShort(r.uploaded_at)}</span></span>;
   if (!items) return <li>{err ? <ErrorState message={err} onRetry={load} /> : <Skeleton rows={2} />}</li>;
   return (
-    <li>
+    <li className="a-rcpt pending-compact">
       <div className="rcpt-banner" role="status">
         <UploadG />
         <div><b>{tr.admin.memberUploaded}</b>
           <div className="small">{r.user_name} · {fmtDateTimeShort(r.uploaded_at)} ({tr.admin.uploadedAgo(Math.max(0, Math.round((Date.now() - new Date(r.uploaded_at).getTime()) / 60000)))}){(r.paid_try ?? r.expected_try) != null && <> · {fmtTRY(r.paid_try ?? r.expected_try)}</>}</div></div>
       </div>
       {r.member_note && <p className="rcpt-msg"><b>{tr.admin.memberNote}:</b> {r.member_note}</p>}
-      <PaymentComposer items={items} elsewhere={elsewhere} receipt={r} head={head} say={say}
+      <div className="row end wrap"><button type="button" className="btn primary" onClick={() => setOpenSheet(true)}>{P.approveOpen}</button></div>
+      {openSheet && <Sheet title={P.approveTitle(r.user_name)} onClose={() => setOpenSheet(false)} wide>
+      <PaymentComposer items={items} elsewhere={elsewhere} receipt={r} head={head} say={say} onDone={() => setOpenSheet(false)}
         credit={fetched?.credit?.balance_try ?? 0}
         onSave={({ charges, amount, note, creditTry }) => onReview(r, "approve", note, { amount_try: amount, charges, month: r.month, ...(creditTry > 0 ? { credit_try: creditTry } : {}) })}
         onReject={(note) => onReview(r, "reject", note)} />
+      </Sheet>}
       {onDelete && <div className="row end"><DeleteReceipt onDelete={() => onDelete(r)} /></div>}
     </li>
   );
@@ -283,6 +289,7 @@ function Outstanding({ data, onDetail }) {
         <p className="owe-note">{clear ? O.allClear : O.owing(data.owing_count, data.users.length)}</p>
       </section>
       {!data.users.length ? <EmptyState title={O.empty[0]} body={O.empty[1]} /> : (
+        <Collapse defaultOpen={false} title={<span>{O.membersTitle}<span className="muted small"> · {O.membersCount(data.users.length)}</span></span>}>
         <ul className="card owe-list" aria-label={O.title}>
           <li className="owe-head" aria-hidden="true"><span>{O.member}</span><span>{O.thisMonth}</span><span>{O.debt}</span></li>
           {data.users.map((u) => (
@@ -300,6 +307,7 @@ function Outstanding({ data, onDetail }) {
             <span className="owe-amt amount">{fmtTRY(data.total_debt_try)}</span>
           </li>
         </ul>
+        </Collapse>
       )}
     </>
   );
@@ -355,6 +363,13 @@ export function Payments({ onDetail }) {
     if (!g) groups.push(g = { user_id: r.user_id, name: r.user_name, rows: [] });
     g.rows.push(r);
   }
+  const done = (list || []).filter((r) => r.status !== "pending");
+  const doneGroups = [];
+  for (const r of done) {
+    let g = doneGroups.find((x) => x.user_id === r.user_id);
+    if (!g) doneGroups.push(g = { user_id: r.user_id, name: r.user_name, rows: [], sum: 0 });
+    g.rows.push(r); if (r.status === "ok") g.sum += r.paid_try ?? 0;
+  }
   return (
     <section>
       <div className="page-head"><h2>{O.title}</h2></div>
@@ -379,7 +394,12 @@ export function Payments({ onDetail }) {
           <ul className="list">{g.rows.map((r) => <ReceiptCard key={r.id} r={r} showUser={false} onReview={review} onDelete={del} say={say} />)}</ul>
         </Collapse>
       ))}
-      <ul className="list">{(list || []).filter((r) => r.status !== "pending").map((r) => <ReceiptCard key={r.id} r={r} onReview={review} onDelete={del} say={say} />)}</ul>
+      {done.length > 0 && <h3 className="sec-title">{A.doneReceipts}<span className="muted small"> · {A.doneCount(done.length)}</span></h3>}
+      {doneGroups.map((g) => (
+        <Collapse key={"d" + g.user_id} defaultOpen={false} title={<span>{g.name}<span className="muted small"> · {A.doneCount(g.rows.length)}{g.sum > 0 ? " · " + fmtTRY(g.sum) : ""}</span></span>}>
+          <ul className="list">{g.rows.map((r) => <ReceiptCard key={r.id} r={r} showUser={false} foldable onReview={review} onDelete={del} say={say} />)}</ul>
+        </Collapse>
+      ))}
       {toast}
     </section>
   );
@@ -400,7 +420,15 @@ function RecordPayment({ userId, month, items, elsewhere, credit, onSaved, say }
     say(out.duplicate ? P.dupWarn : P.saved);
     await onSaved();
   };
-  return <PaymentComposer items={items} elsewhere={elsewhere} credit={credit} head={null} onSave={save} say={say} />;
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div className="row"><button type="button" className="btn primary" onClick={() => setOpen(true)}>{P.title}</button></div>
+      {open && <Sheet title={P.title} onClose={() => setOpen(false)} wide>
+        <PaymentComposer items={items} elsewhere={elsewhere} credit={credit} head={null} onSave={save} say={say} onDone={() => setOpen(false)} />
+      </Sheet>}
+    </>
+  );
 }
 
 function Chev({ open }) {
@@ -532,9 +560,7 @@ export function UserDetail({ user, onBack, backLabel }) {
             </div>
             <div className="row end"><button className="btn primary" disabled={!adj.amount || !adj.label.trim()}>{A.adjustAdd}</button></div>
           </form>
-          <Collapse title={P.title} defaultOpen={false}>
-            <RecordPayment userId={user.id} month={data.month} items={data.items} elsewhere={data.other_open} credit={data.credit.balance_try} say={say} onSaved={() => load(data.month)} />
-          </Collapse>
+          <RecordPayment userId={user.id} month={data.month} items={data.items} elsewhere={data.other_open} credit={data.credit.balance_try} say={say} onSaved={() => load(data.month)} />
           <Collapse title={A.payments}>
           {!data.receipts.length && <EmptyState title={tr.empty.receipts[0]} body={tr.empty.receipts[1]} />}
           <ul className="list">{data.receipts.map((r) => (
@@ -575,7 +601,7 @@ export function Fees() {
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState(() => new Set()); // months ticked for a bulk edit
   const [bulk, setBulk] = useState(null); // { subscription_try, booking_try } while the bulk sheet is open; blank = keep each month's own value
-  const [openYears, setOpenYears] = useState(() => new Set([nowMonth().slice(0, 4)])); // current year open, the rest collapsed
+  const [openYears, setOpenYears] = useState(() => new Set()); // every year collapsed by default
   const [say, toast] = useToast();
   const [loadErr, setLoadErr] = useState("");
   const loadFees = () => { setLoadErr(""); api("GET", "/admin/fees").then(setFees, (e) => setLoadErr(e.message || tr.err.load)); };
@@ -700,6 +726,8 @@ export function PaySettings() {
   const [say, toast] = useToast();
   const [loadErr, setLoadErr] = useState("");
   const [withPdf, setWithPdf] = useState(false);
+  const [showIban, setShowIban] = useState(false); // masked until tapped, like the member-facing Billing screen
+  const ibanMask = (v) => (v.slice(0, 4) + "•".repeat(Math.max(0, v.length - 6)) + v.slice(-2)).replace(/(.{4})/g, "$1 ").trim();
   const loadS = () => { setLoadErr(""); api("GET", "/admin/settings").then(setS, (e) => setLoadErr(e.message || tr.err.load)); };
   useEffect(loadS, []); // eslint-disable-line react-hooks/exhaustive-deps
   const save = async (e) => {
@@ -711,7 +739,11 @@ export function PaySettings() {
     <section>
       <div className="page-head"><h2>{A.settingsTitle}</h2></div>
       <form className="card form" onSubmit={save}>
-        <label className="field"><span>{A.settingsIban}</span><input value={s.iban} placeholder="TR00 0000 0000 0000 0000 0000 00" autoComplete="off" onChange={(e) => setS({ ...s, iban: e.target.value })} /></label>
+        <div className="field"><label htmlFor="pay-iban">{A.settingsIban}</label>
+          {showIban || !s.iban ? <input id="pay-iban" value={s.iban} placeholder="TR00 0000 0000 0000 0000 0000 00" autoComplete="off" onChange={(e) => setS({ ...s, iban: e.target.value })} />
+            : <input id="pay-iban" className="iban" readOnly value={ibanMask(s.iban)} aria-label={A.settingsIban} />}
+          {s.iban && <div className="row"><button type="button" className="btn sm" onClick={() => setShowIban(!showIban)}>{showIban ? tr.billing.hideIban : tr.billing.showIban}</button></div>}
+        </div>
         <label className="field"><span>{A.settingsHolder}</span><input value={s.holder} onChange={(e) => setS({ ...s, holder: e.target.value })} /></label>
         <label className="check">
           <input type="checkbox" checked={s.requireRecipient} onChange={(e) => setS({ ...s, requireRecipient: e.target.checked })} />

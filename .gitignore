@@ -20,3 +20,5 @@ web/dist
 .vite/
 coverage/
 verify-shots/
+.github/workflows/restore.yml
+prova-before-delete.sql

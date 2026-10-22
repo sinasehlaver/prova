@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import Fold from "./Fold.jsx";
 import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
@@ -49,10 +50,8 @@ export default function AlertKinds() {
 
   return (
     <section className="kinds-admin">
-      <div className="page-head">
-        <h2>{tr.kinds.title}</h2>
-        <button className="btn primary" onClick={() => { setErr(""); setEdit(EMPTY); }}><PlusIcon width="18" height="18" />{tr.kinds.add}</button>
-      </div>
+      <Fold tag="h2" defaultOpen={false} title={tr.kinds.title} sum={kinds ? kinds.length : null}
+        actions={<button className="btn primary" onClick={() => { setErr(""); setEdit(EMPTY); }}><PlusIcon width="18" height="18" />{tr.kinds.add}</button>}>
       {!kinds && (loadErr ? <ErrorState message={loadErr} onRetry={load} /> : <Skeleton rows={2} />)}
       {kinds && !kinds.length && <EmptyState title={tr.empty.kinds[0]} body={tr.empty.kinds[1]} />}
       <ul className="list">
@@ -69,6 +68,7 @@ export default function AlertKinds() {
           </li>
         ))}
       </ul>
+      </Fold>
       {edit && (
         <Sheet title={edit.id ? tr.kinds.editTitle : tr.kinds.add} onClose={() => setEdit(null)}>
           <form className="sheet-form" onSubmit={save}>

@@ -14,3 +14,4 @@ export const PlusIcon = P(<path d="M12 5v14M5 12h14" />);
 export const ChevronLeftIcon = P(<path d="m14.5 6-6 6 6 6" />);
 export const ChevronRightIcon = P(<path d="m9.5 6 6 6-6 6" />);
 export const CloseIcon = P(<path d="M6 6l12 12M18 6 6 18" />);
+export const CheckIcon = P(<path d="m5 12.5 4.5 4.5L19 7.5" />);

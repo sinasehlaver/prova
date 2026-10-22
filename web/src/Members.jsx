@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import Fold from "./Fold.jsx";
 import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
@@ -64,10 +65,8 @@ export default function Members({ me, onDetail }) {
   return (
     <section>
       {sure && <ConfirmSheet title={tr.members.reject} body={tr.members.rejectConfirm(sure.name)} confirmLabel={tr.members.reject} danger onClose={() => setSure(null)} onConfirm={() => decide(sure, "reject", true)} />}
-      <div className="page-head">
-        <h2>{tr.members.title}</h2>
-        {!adding && <button className="btn primary" onClick={() => setAdding(true)}><PlusIcon width="18" height="18" />{tr.members.add}</button>}
-      </div>
+      <Fold tag="h2" defaultOpen={false} title={tr.members.title} sum={users ? approved.length + pending.length : null}
+        actions={!adding && <button className="btn primary" onClick={() => setAdding(true)}><PlusIcon width="18" height="18" />{tr.members.add}</button>}>
 
       {adding && (
         <form className="card form" onSubmit={create}>
@@ -142,6 +141,7 @@ export default function Members({ me, onDetail }) {
           </li>
         ))}
       </ul>
+      </Fold>
       <div className={"toast" + (toast ? " show" : "")} role="status">{toast}</div>
     </section>
   );
