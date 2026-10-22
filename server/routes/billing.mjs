@@ -5,7 +5,7 @@ import { requireAuth } from "../lib/auth.mjs";
 import { rateLimit } from "../lib/ratelimit.mjs";
 import { browsableMonths, canBrowse, ensureMonth, fail, isMonth, monthRange, monthView, openElsewhere, projectedSub, userDebt } from "../lib/billing.mjs";
 import { creditOutlook, creditPayload } from "../lib/credits.mjs";
-import { deleteReceipt, getSettings, listReceipts, MAX_PDF, submitReceipt } from "../lib/payments.mjs";
+import { deleteReceipt, getSettings, listReceipts, MAX_PDF, resubmitReceipt, submitReceipt } from "../lib/payments.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 import billingAdmin from "./billing-admin.mjs";
 
@@ -24,7 +24,7 @@ export async function billingPayload(db, user, month, { admin = false } = {}) {
   // Past months nobody opened have no rent row yet; make them so past unpaid aidat shows in the composer's "other months".
   for (const m of monthRange(user.joined_month, currentMonth())) if (m !== month) await ensureMonth(db, user, m);
   const [view, receipts, cfg, credit, planned, other_open, debt] = await Promise.all([
-    monthView(db, user.id, month), listReceipts(db, { userId: user.id, month }), getSettings(db), creditPayload(db, user.id),
+    monthView(db, user.id, month), listReceipts(db, { userId: user.id, month, viewer: admin ? "admin" : "member" }), getSettings(db), creditPayload(db, user.id),
     projectedSub(db, user, month), openElsewhere(db, user, month), userDebt(db, user.id),
   ]);
   const projected_try = planned?.amount_try ?? 0;
@@ -73,6 +73,13 @@ export default ({ db }) => {
   r.delete("/billing/receipts/:id", requireAuth, guard(async (req, res) => {
     await deleteReceipt(db, Number(req.params.id), { userId: req.user.id });
     res.json({ ok: true });
+  }));
+
+  // Member edits a rejected own upload and sends it back to review: optional new PDF body, ?message=
+  r.post("/billing/receipts/:id/resubmit", requireAuth, rawPdf, guard(async (req, res) => {
+    const id = Number(req.params.id);
+    await resubmitReceipt(db, req.user, id, { buffer: bodyBuf(req), filename: req.query.filename, message: req.query.message });
+    res.json((await listReceipts(db, { id }))[0]);
   }));
 
   r.get("/receipts/:id/pdf", requireAuth, guard(async (req, res) => {

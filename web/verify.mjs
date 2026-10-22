@@ -89,8 +89,9 @@ try {
   await page.click('.slot[data-hour="12"] >> nth=1'); // tomorrow 12:00 (columns = today, +1, +2)
   await page.waitForSelector(".sheet");
   await page.fill(".sheet input", "verify prova");
-  await page.click('.stepper button[aria-label="Bir kişi artır"]'); // people 1 -> 2
-  if ((await page.textContent(".stepper output")).trim() !== "2") fail("people stepper did not reach 2");
+  await page.click('.stepper button[aria-label="Bir kişi artır"]'); // people 0 -> +1 -> +2
+  await page.click('.stepper button[aria-label="Bir kişi artır"]');
+  if ((await page.textContent(".stepper output")).trim() !== "+2") fail("people stepper did not reach +2");
   await page.screenshot({ path: `${SHOTS}/calendar-sheet.png` });
   await page.click(".sheet .btn.primary");
   await page.waitForSelector(".res.mine");
@@ -112,7 +113,7 @@ try {
   await page.waitForSelector(".sheet");
   if (!(await page.textContent(".sheet")).includes("Rezervasyonu düzenle")) fail("edit sheet title");
   if ((await page.inputValue(".sheet input")) !== "verify prova") fail("edit sheet not prefilled");
-  if ((await page.textContent(".stepper output")).trim() !== "2") fail("edit sheet people not prefilled");
+  if ((await page.textContent(".stepper output")).trim() !== "+2") fail("edit sheet people not prefilled");
   await page.click(".sheet .btn.primary");
   await page.waitForSelector(".sheet", { state: "detached" });
   await page.waitForSelector(".toast.show");

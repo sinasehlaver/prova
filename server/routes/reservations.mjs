@@ -54,7 +54,7 @@ export default ({ db }) => {
   r.post("/reservations", guard(async (req, res) => {
     const b = req.body ?? {};
     const id = await createReservation(db, {
-      bookerId: req.user.id, bookerRole: req.user.role, startMs: b.start_ms, hours: b.hours, note: b.note, people: b.people ?? 1,
+      bookerId: req.user.id, bookerRole: req.user.role, startMs: b.start_ms, hours: b.hours, note: b.note, people: b.people ?? 0,
     });
     const [created] = await listReservations(db, b.start_ms, b.start_ms + 1);
     res.status(201).json(created ?? { id });
@@ -62,7 +62,7 @@ export default ({ db }) => {
 
   r.patch("/reservations/:id", guard(async (req, res) => {
     const b = req.body ?? {};
-    await updateReservation(db, Number(req.params.id), req.user, { startMs: b.start_ms, hours: b.hours, note: b.note, people: b.people ?? 1 });
+    await updateReservation(db, Number(req.params.id), req.user, { startMs: b.start_ms, hours: b.hours, note: b.note, people: b.people ?? 0 });
     res.json({ ok: true });
   }));
 

@@ -1,4 +1,5 @@
 import React, { useEffect, useId, useRef, useState } from "react";
+import usePoll from "./usePoll.js";
 import { api, apiUpload } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon } from "./icons.jsx";
@@ -49,8 +50,8 @@ function PdfToggle({ src, title }) {
 // Multi-month (2026-09-23): `elsewhere` = the member's open items in OTHER months (older debt, already-made future
 // bookings, next month's planned rent `sub:YYYY-MM`) - one payment can cover e.g. this month's extra + next month's
 // rent. A surplus still only spills onto THIS month's other items (server: pickRaw), mirrored below.
-// `credit` > 0 (admin record only) offers "Alacaktan öde": the member's existing credit pays the picked items, no new
-// money, no PDF, no spill (server: recordPayment fromCredit).
+// `credit` > 0 (admin record and pending-upload approve) offers "Alacağı hesaba kat": min(credit, selected total) is deducted from the picked
+// items (any month) and the rest is paid in cash (may be 0). Server: recordPayment creditTry.
 function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onSave, onReject, say }) {
   const isOpen = (i) => (i.status === "unpaid" || i.status === "upcoming") && i.remaining_try > 0;
   const open = items.filter(isOpen);
@@ -64,14 +65,15 @@ function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onS
   const [blobUrl, setBlobUrl] = useState(null);
   const [busy, setBusy] = useState(false);
   const [useCredit, setUseCredit] = useState(false);
-  const fromCredit = useCredit && credit > 0 && !receipt;
+  const fromCredit = useCredit && credit > 0; // "Alacağı hesaba kat" ticked
   const amountId = useId();
   const openKey = all.map((i) => `${keyOf(i)}:${i.remaining_try}`).join(",");
   useEffect(() => { setSel((s) => new Set([...s].filter((k) => all.some((i) => keyOf(i) === k)))); }, [openKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const sum = all.filter((i) => sel.has(keyOf(i))).reduce((s, i) => s + i.remaining_try, 0);
-  const others = fromCredit ? 0 : open.filter((i) => !sel.has(keyOf(i))).reduce((s, i) => s + i.remaining_try, 0);
-  const suggest = fromCredit ? Math.min(sum, credit) : sum;
-  useEffect(() => { if (!typed.current) setAmount(suggest > 0 ? String(suggest) : ""); }, [suggest]);
+  const creditApplied = fromCredit ? Math.min(credit, sum) : 0;
+  const others = open.filter((i) => !sel.has(keyOf(i))).reduce((s, i) => s + i.remaining_try, 0);
+  const suggest = sum - creditApplied; // = ödenecek
+  useEffect(() => { if (!typed.current) setAmount(suggest > 0 ? String(suggest) : creditApplied > 0 ? "0" : ""); }, [suggest, creditApplied]);
   useEffect(() => {
     if (!file) { setBlobUrl(null); return undefined; }
     const u = URL.createObjectURL(file);
@@ -81,9 +83,11 @@ function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onS
 
   const n = Number(amount);
   const paid = n > 0 ? n : 0;
-  const surplus = fromCredit ? 0 : Math.max(0, paid - sum); // from credit: an unspent rest simply stays credit
+  const surplus = Math.max(0, paid - (sum - creditApplied));
   const spill = Math.min(surplus, others);
-  const overCredit = fromCredit && paid > credit;
+  const noMoney = !(n > 0) && !(creditApplied > 0);
+  const [awayOpen, setAwayOpen] = useState(away.length <= 3);
+  const awayId = useId();
   const toggle = (id) => setSel((s) => { const x = new Set(s); x.has(id) ? x.delete(id) : x.add(id); return x; });
   const pickRow = (it, showMonth) => (
     <li key={keyOf(it)}>
@@ -115,7 +119,7 @@ function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onS
       if ((await fn()) !== false) { setSel(new Set()); setNote(""); setFile(null); setUseCredit(false); typed.current = false; setAmount(""); }
     } catch (err) { say(err.message || tr.err.generic); } finally { setBusy(false); }
   };
-  const submit = (e) => { e.preventDefault(); run(() => onSave({ charges: [...sel], amount: n, note: note.trim(), file: fromCredit ? null : file, fromCredit })); };
+  const submit = (e) => { e.preventDefault(); run(() => onSave({ charges: [...sel], amount: paid, note: note.trim(), file: paid > 0 ? file : null, creditTry: creditApplied })); };
 
   if (!receipt && !all.length)
     return <section className="card pay-card pay-form draft"><div className="pay-head">{head}</div><p className="hint">{P.none}</p></section>;
@@ -132,28 +136,31 @@ function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onS
           {open.length > 0 ? <ul className="pay-pick">{open.map((it) => pickRow(it, false))}</ul> : <p className="hint">{P.none}</p>}
           {away.length > 0 && (
             <>
-              <div className="pay-legend pay-away">{P.otherMonths}</div>
-              <ul className="pay-pick">{away.map((it) => pickRow(it, true))}</ul>
+              <div className="pay-legend pay-away">
+                <button type="button" className="fold-toggle" aria-expanded={awayOpen} aria-controls={awayId} onClick={() => setAwayOpen(!awayOpen)}>
+                  <Chev open={awayOpen} />{P.otherMonths}<small>{P.awayCount(away.length)}{!awayOpen && away.some((i) => sel.has(keyOf(i))) ? ` · ${away.filter((i) => sel.has(keyOf(i))).length} ✓` : ""}</small>
+                </button>
+              </div>
+              <ul className="pay-pick" id={awayId} hidden={!awayOpen}>{away.map((it) => pickRow(it, true))}</ul>
             </>
           )}
         </fieldset>
       ) : <p className="hint">{P.none}</p>}
-      {credit > 0 && !receipt && (
+      {credit > 0 && (
         <div className="pay-credit">
           <label className="check"><input type="checkbox" checked={useCredit} onChange={(e) => { setUseCredit(e.target.checked); typed.current = false; }} /><span>{P.fromCredit(fmtTRY(credit))}</span></label>
           {fromCredit && <p className="hint">{P.fromCreditHint}</p>}
         </div>
       )}
-      <PaySummary count={sel.size} sum={sum} paid={paid} spill={spill} owed={surplus - spill}>
+      <PaySummary count={sel.size} sum={sum} credit={creditApplied} paid={paid} spill={spill} owed={surplus - spill}>
         {[
-          <label key="l" htmlFor={amountId}>{fromCredit ? P.creditUsed : P.amount}</label>,
-          <input key="i" id={amountId} className="pay-amount" type="number" min="1" max={fromCredit ? credit : undefined} step="1" required inputMode="numeric" value={amount}
+          <label key="l" htmlFor={amountId}>{creditApplied > 0 ? P.payNow : P.amount}</label>,
+          <input key="i" id={amountId} className="pay-amount" type="number" min={creditApplied > 0 ? "0" : "1"} step="1" required={!(creditApplied > 0)} inputMode="numeric" value={amount}
             onChange={(e) => { typed.current = true; setAmount(e.target.value); }} />,
         ]}
       </PaySummary>
-      {overCredit && <p className="hint warn-text" role="alert">{P.overCredit}</p>}
       <label className="field"><span>{P.note}</span><input maxLength={300} value={note} onChange={(e) => setNote(e.target.value)} /></label>
-      {receipt ? (receipt.has_pdf && <PdfToggle src={`/api/receipts/${receipt.id}/pdf`} title={receipt.filename} />) : fromCredit ? null : (
+      {receipt ? (receipt.has_pdf && <PdfToggle src={`/api/receipts/${receipt.id}/pdf`} title={receipt.filename} />) : paid === 0 && creditApplied > 0 ? null : (
         <div className="pay-pdf">
           <div className="row wrap">
             <label className="btn file" aria-disabled={busy}>
@@ -173,7 +180,7 @@ function PaymentComposer({ items, elsewhere = [], credit = 0, receipt, head, onS
       {!sel.size && all.length > 0 && <p className="hint">{P.pickFirst}</p>}
       <div className="row end wrap">
         {onReject && <button type="button" className="btn danger" disabled={busy} onClick={() => run(() => onReject(note.trim()))}>{A.reject}</button>}
-        <button className="btn primary" disabled={busy || !sel.size || !(n > 0) || overCredit}>{P.submit}</button>
+        <button className="btn primary" disabled={busy || !sel.size || noMoney}>{P.submit}</button>
       </div>
     </form>
   );
@@ -185,15 +192,17 @@ function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, o
   const [fetched, setFetched] = useState(null);
   const [err, setErr] = useState("");
   const load = () => { setErr(""); api("GET", `/admin/users/${r.user_id}/billing?month=${r.month}`).then((d) => setFetched(d), (e) => setErr(e.message || tr.err.load)); };
-  useEffect(() => { if (!given) load(); }, [given, r.user_id, r.month]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [r.user_id, r.month]); // eslint-disable-line react-hooks/exhaustive-deps
   const items = given ?? fetched?.items;
   const elsewhere = given ? givenElse : fetched?.other_open;
   const head = <span><b>{showUser ? r.user_name : monthLabel(r.month)}</b>{showUser && <span className="muted small"> · {monthLabel(r.month)}</span>}<span className="muted small"> · {fmtDateTimeShort(r.uploaded_at)}</span></span>;
   if (!items) return <li>{err ? <ErrorState message={err} onRetry={load} /> : <Skeleton rows={2} />}</li>;
   return (
     <li>
+      {r.member_note && <p className="rcpt-msg"><b>{tr.admin.memberNote}:</b> {r.member_note}</p>}
       <PaymentComposer items={items} elsewhere={elsewhere} receipt={r} head={head} say={say}
-        onSave={({ charges, amount, note }) => onReview(r, "approve", note, { amount_try: amount, charges, month: r.month })}
+        credit={fetched?.credit?.balance_try ?? 0}
+        onSave={({ charges, amount, note, creditTry }) => onReview(r, "approve", note, { amount_try: amount, charges, month: r.month, ...(creditTry > 0 ? { credit_try: creditTry } : {}) })}
         onReject={(note) => onReview(r, "reject", note)} />
       {onDelete && <div className="row end"><DeleteReceipt onDelete={() => onDelete(r)} /></div>}
     </li>
@@ -206,21 +215,17 @@ function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, o
  * PDF only if there is one. The undo (reject) is tucked away in a disclosure. Rejected/undone ones render muted.
  */
 function ReceiptCard({ r, onReview, onDelete, showUser = true, items, elsewhere, say, foldable }) {
-  const [note, setNote] = useState("");
   const [open, setOpen] = useState(true);
-  const [busy, setBusy] = useState(false);
   if (r.status === "pending") return <PendingReceiptCard r={r} items={items} elsewhere={elsewhere} onReview={onReview} onDelete={onDelete} showUser={showUser} say={say} />;
   const ok = r.status === "ok";
-  const review = async (action) => { setBusy(true); try { if ((await onReview(r, action, note)) !== false) setNote(""); } finally { setBusy(false); } };
   const picked = r.charges.filter((c) => c.selected !== false);
   const adminNote = ok ? (r.admin_note || "").replace(/^Yönetici (kaydetti|onayladı):?\s*/, "") : "";
   return (
-    <li className={"card pay-card a-rcpt " + (ok ? "saved" : "void")}>
+    <li className={"card pay-card a-rcpt " + (ok ? "saved" : "draft")}>
       <div className="pay-head">
         {foldable ? <button type="button" className="fold-toggle" aria-expanded={open} onClick={() => setOpen(!open)}><Chev open={open} /><b>{monthLabel(r.month)}</b>{!open && <small>{fmtTRY(r.paid_try ?? r.expected_try ?? 0)}</small>}</button>
           : <span><b>{showUser ? r.user_name : monthLabel(r.month)}</b>{showUser && <span className="muted small"> · {monthLabel(r.month)}</span>}</span>}
-        {ok ? <span className="pill ok"><CheckG />{P.savedPill}</span>
-          : r.admin_note != null ? <span className="pill"><DashG />{A.rejected}</span> : <StatusPill flag={r.status} />}
+        {ok ? <span className="pill ok"><CheckG />{P.savedPill}</span> : <StatusPill flag={r.status} />}
       </div>
       <div hidden={foldable && !open}>
       <div className="muted small">{fmtDateTimeShort(r.uploaded_at)}{r.bank_ref ? ` · ${A.bankRef}: ${r.bank_ref}` : ""}</div>
@@ -238,19 +243,10 @@ function ReceiptCard({ r, onReview, onDelete, showUser = true, items, elsewhere,
           </ul>
         </div>
       )}
-      {ok && <PaySummary saved count={picked.length} sum={r.expected_try} paid={r.paid_try} spill={r.spill_try} owed={r.overpaid_try} paidLabel={r.from_credit ? P.creditUsed : P.paid} />}
+      {ok && <PaySummary saved count={picked.length} sum={r.expected_try} paid={r.cash_try ?? r.paid_try} credit={r.credit_try ?? 0} spill={r.spill_try} owed={r.overpaid_try} />}
       {adminNote && <p className="rcpt-msg">{adminNote}</p>}
       {r.has_pdf && <PdfToggle src={`/api/receipts/${r.id}/pdf`} title={r.filename} />}
-      {(ok || r.charges.length > 0) && <details className="pay-undo">
-        <summary>{ok ? P.undo : P.redo}</summary>
-        {ok && <p className="hint">{P.undoHint}</p>}
-        <div className="review">
-          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={A.notePh} aria-label={A.notePh} />
-          {ok ? <button type="button" className="btn danger" disabled={busy} onClick={() => review("reject")}>{P.undoBtn}</button>
-            : <button type="button" className="btn good" disabled={busy} onClick={() => review("approve")}>{P.redo}</button>}
-        </div>
-      </details>}
-      {onDelete && !ok && <div className="row end"><DeleteReceipt onDelete={() => onDelete(r)} /></div>}
+      {onDelete && <div className="row end"><DeleteReceipt paid={ok} onDelete={() => onDelete(r)} /></div>}
       </div>
     </li>
   );
@@ -330,6 +326,11 @@ export function Payments({ onDetail }) {
     api("GET", "/admin/receipts" + (q ? "?" + q : "")).then(setList, (e) => setLoadErr(e.message || tr.err.load));
   };
   useEffect(load, [f, month, allMonths]); // eslint-disable-line react-hooks/exhaustive-deps
+  usePoll((ok) => {
+    const q = new URLSearchParams(Object.entries({ ...f, month: allMonths ? "" : month }).filter(([, v]) => v)).toString();
+    return Promise.all([api("GET", `/admin/billing/overview?month=${month}`), api("GET", "/admin/receipts" + (q ? "?" + q : ""))])
+      .then(([o, l]) => { if (ok()) { setOv(o); setList(l); setOvErr(""); setLoadErr(""); } });
+  });
   const del = async (r) => {
     try { await api("DELETE", `/admin/receipts/${r.id}`); setList((l) => l.filter((x) => x.id !== r.id)); loadOv(); say(A.receiptDeleted); }
     catch (e) { say(e.message || tr.err.generic); }
@@ -337,7 +338,7 @@ export function Payments({ onDetail }) {
   const review = async (r, action, note, extra) => {
     try {
       const upd = await api("POST", `/admin/receipts/${r.id}/${action}`, { note, ...extra });
-      setList((l) => l.map((x) => (x.id === r.id ? upd : x)));
+      setList((l) => (upd?.status === "mismatch" ? l.filter((x) => x.id !== r.id) : l.map((x) => (x.id === r.id ? upd : x)))); // rejected member uploads leave the admin list
       loadOv();
       say(action === "approve" ? A.approved : A.rejected);
     } catch (e) { say(e.message || tr.err.generic); return false; }
@@ -373,11 +374,11 @@ export function Payments({ onDetail }) {
  * stores the parse metadata and flags a re-filed dekont with `duplicate`, shown as a toast after saving).
  */
 function RecordPayment({ userId, month, items, elsewhere, credit, onSaved, say }) {
-  const save = async ({ charges, amount, note, file, fromCredit }) => {
+  const save = async ({ charges, amount, note, file, creditTry }) => {
     const q = new URLSearchParams({ month, amount_try: String(amount), charges: charges.join(",") });
     if (file) q.set("filename", file.name);
     if (note) q.set("note", note);
-    if (fromCredit) q.set("from_credit", "1");
+    if (creditTry > 0) q.set("credit_try", String(creditTry));
     const out = await apiUpload(`/admin/users/${userId}/receipts?${q}`, file);
     say(out.duplicate ? P.dupWarn : P.saved);
     await onSaved();
@@ -426,7 +427,7 @@ function BillingStart({ user, say, onChanged }) {
 const ConfirmGate = ({ text, label, onYes, onNo }) => <ConfirmSheet title={tr.members.billingStart} body={text} confirmLabel={label} onClose={onNo} onConfirm={onYes} />;
 
 /** Per-user payments + reservations (admin). */
-export function UserDetail({ user, onBack }) {
+export function UserDetail({ user, onBack, backLabel }) {
   const [data, setData] = useState(null);
   const [res, setRes] = useState(null);
   const [adj, setAdj] = useState({ amount: "", label: "" });
@@ -440,6 +441,10 @@ export function UserDetail({ user, onBack }) {
     );
   };
   useEffect(() => { load(); api("GET", `/admin/users/${user.id}/reservations`).then(setRes, () => {}); }, [user.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  usePoll((ok) => Promise.all([
+    api("GET", `/admin/users/${user.id}/billing${data?.month ? `?month=${data.month}` : ""}`),
+    api("GET", `/admin/users/${user.id}/reservations`),
+  ]).then(([d, r]) => { if (ok()) { setData(d); setRes(r); } }, (e) => { if (e.status === 404 && ok()) onBack(); }));
 
   const waive = async (it, waived) => { try { await api("POST", `/admin/charges/${it.id}/waive`, { waived }); say(waived ? A.waived : A.unwaive); load(data.month); } catch (e) { say(e.message); } };
   const del = async (r) => {
@@ -469,7 +474,7 @@ export function UserDetail({ user, onBack }) {
   return (
     <section>
       <div className="detail-head">
-        <button className="icon-btn" onClick={onBack} aria-label={A.back}><ChevronLeftIcon /></button>
+        <button className="icon-btn" onClick={onBack} aria-label={backLabel || A.back}><ChevronLeftIcon /></button>
         <h2>{user.name}</h2>
       </div>
       {!data && (loadErr ? <ErrorState message={loadErr} onRetry={() => load()} /> : <Skeleton rows={3} />)}

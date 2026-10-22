@@ -19,7 +19,7 @@ export async function buildExport(db, { includePdf = false } = {}) {
     rows(db, "SELECT * FROM reservation_audit ORDER BY id"), // slot_holds are ephemeral: deliberately not exported
   ]);
   // metadata only: no pdf blob / extracted text (text can hold IBANs and names from the dekont)
-  const receipts = (await rows(db, `SELECT id, user_id, month, filename, sha256, amounts_json, bank_ref, status, expected_try, found_try, uploaded_at, admin_note, applied_try, overpaid_try${includePdf ? ", pdf" : ""} FROM receipts ORDER BY id`))
+  const receipts = (await rows(db, `SELECT id, user_id, month, filename, sha256, amounts_json, bank_ref, status, expected_try, found_try, uploaded_at, admin_note, applied_try, overpaid_try, credit_try${includePdf ? ", pdf" : ""} FROM receipts ORDER BY id`))
     .map(({ pdf, ...r }) => (includePdf ? { ...r, pdf_base64: pdf ? Buffer.from(pdf).toString("base64") : null } : r));
   return {
     exported_at: new Date().toISOString(), version: 1, includes_pdf: includePdf, currency: "TRY (whole lira)",

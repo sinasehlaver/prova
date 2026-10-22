@@ -19,6 +19,22 @@ export const monthRange = (from, to) => {
   return out;
 };
 
+/**
+ * A subscription charge that became unpaid again (receipt deleted / rejected) re-reads the fee now in force for its month:
+ * charges are snapshots, and a setFee made while it was paid/covered skipped it. Only open, uncovered subscription charges.
+ */
+export async function repriceOpenSubscriptions(db, chargeIds) {
+  for (const id of chargeIds) {
+    const c = (await db.execute({
+      sql: `SELECT c.id, c.month, c.amount_try FROM charges c WHERE c.id = ? AND c.kind = 'subscription' AND c.voided_at IS NULL
+            AND c.waived_at IS NULL AND c.paid_receipt_id IS NULL AND ${COVERED_SQL} = 0`, args: [id],
+    })).rows[0];
+    if (!c) continue;
+    const { subscription_try } = await feeFor(db, c.month);
+    if (subscription_try !== c.amount_try) await db.execute({ sql: "UPDATE charges SET amount_try = ? WHERE id = ?", args: [subscription_try, c.id] });
+  }
+}
+
 /** Fee row in force for `month`: latest effective_from <= month. */
 export async function feeFor(db, month) {
   const r = (await db.execute({
@@ -31,7 +47,7 @@ export async function feeFor(db, month) {
 export async function addBookingCharges(tx, reservationId, bookerId, people, startMs) {
   const month = monthOf(startMs);
   const { booking_try } = await feeFor(tx, month);
-  if (!(booking_try > 0)) return;
+  if (!(booking_try > 0) || !(people > 0)) return; // people 0 = free reservation, no charge
   await tx.execute({
     sql: "INSERT INTO charges (user_id, month, kind, amount_try, reservation_id) VALUES (?,?, 'booking', ?, ?)",
     args: [bookerId, month, booking_try * people, reservationId],
@@ -49,6 +65,10 @@ export async function repriceBookingCharge(tx, reservationId, bookerId, people, 
   if (!c) return addBookingCharges(tx, reservationId, bookerId, people, startMs);
   const { booking_try } = await feeFor(tx, month);
   const amount = booking_try * people;
+  if (amount === 0 && !(c.paid_receipt_id || c.waived_at || Number(c.covered) > 0)) {
+    await tx.execute({ sql: "UPDATE charges SET voided_at = ? WHERE id = ?", args: [Date.now(), c.id] });
+    return;
+  }
   if (c.paid_receipt_id || c.waived_at || Number(c.covered) > 0) {
     if (c.month !== month || amount !== c.amount_try) throw fail(409, "Ödemesi alınmış rezervasyonun ay ya da kişi sayısı değiştirilemez");
     return;

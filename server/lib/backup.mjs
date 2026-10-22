@@ -42,6 +42,64 @@ export function unseal(buf, key) {
   catch { throw new Error("cannot decrypt backup (wrong BACKUP_KEY or corrupted file)"); }
 }
 
+// Never merged: migrations are owned by the live code, holds are 2-minute ephemera.
+const NO_MERGE = new Set(["schema_migrations", "slot_holds"]);
+const CAP = 200;
+
+/**
+ * Additive restore into a LIVE database: inserts backup rows whose primary key is missing, never updates or
+ * deletes anything. Rows present in both but different are kept as live and reported. One transaction;
+ * apply=false runs the same statements (so constraint/FK problems show up) and rolls back.
+ * Report holds table names + ids only: it is printed in a public repo's Actions log.
+ */
+export async function mergeDb(db, dump, { apply = false } = {}) {
+  const live = await dumpDb(db);
+  const tables = {}, stmts = [], owners = [];
+  for (const [name, bt] of Object.entries(dump.tables)) {
+    if (NO_MERGE.has(name)) continue;
+    const lt = live.tables[name];
+    if (!lt) { tables[name] = { skipped: "table missing in live DB (the app creates it on next boot)" }; continue; }
+    const cols = bt.columns.filter((c) => lt.columns.includes(c));
+    const pk = (await db.execute(`PRAGMA table_info(${q(name)})`)).rows.filter((r) => r.pk > 0).sort((a, b) => a.pk - b.pk).map((r) => r.name).filter((c) => cols.includes(c));
+    const idCols = pk.length ? pk : cols;
+    const pick = (t, r, cs) => cs.map((c) => r[t.columns.indexOf(c)]);
+    const liveRows = new Map(lt.rows.map((r) => [JSON.stringify(pick(lt, r, idCols)), r]));
+    const sql = `INSERT OR IGNORE INTO ${q(name)} (${cols.map(q).join(",")}) VALUES (${cols.map(() => "?").join(",")})`;
+    const t = tables[name] = { backup: bt.rows.length, live: lt.rows.length, same: 0, added: 0, added_ids: [], differs: [], ignored: 0 };
+    for (const r of bt.rows) {
+      const key = JSON.stringify(pick(bt, r, idCols)), mine = liveRows.get(key);
+      if (!mine) { stmts.push({ sql, args: pick(bt, r, cols).map(dec) }); owners.push({ t, label: pick(bt, r, idCols).map((v) => (v && typeof v === "object" ? "·" : v)).join("/") }); continue; }
+      const bad = cols.filter((c) => JSON.stringify(r[bt.columns.indexOf(c)]) !== JSON.stringify(mine[lt.columns.indexOf(c)]));
+      if (!bad.length) t.same++; else t.differs.push({ id: pick(bt, r, idCols).join("/"), columns: bad });
+    }
+  }
+  const tx = await db.transaction("write");
+  try {
+    await tx.execute("PRAGMA defer_foreign_keys = ON");
+    const res = stmts.length ? await tx.batch(stmts) : [];
+    res.forEach((rs, i) => {
+      const { t, label } = owners[i];
+      if (rs.rowsAffected) { t.added++; t.added_ids.push(label); } else t.ignored++; // ignored = unique clash with a live row
+    });
+    const fk = (await tx.execute("PRAGMA foreign_key_check")).rows.length;
+    if (fk) throw new Error(`restore would leave ${fk} broken foreign-key reference(s); nothing was changed`);
+    if (apply) await tx.commit(); else await tx.rollback();
+  } catch (e) { await tx.rollback().catch(() => {}); throw e; } finally { tx.close(); }
+  return { backup_at: dump.created_at, applied: apply, tables };
+}
+
+export function formatReport(rep) {
+  const L = [`### ${rep.applied ? "Restore APPLIED" : "Restore DRY RUN (nothing changed)"} · backup from ${rep.backup_at}`, "", "| table | in backup | in live | identical | " + (rep.applied ? "restored" : "would restore") + " | differs (live kept) | clashed (skipped) |", "|---|--:|--:|--:|--:|--:|--:|"];
+  for (const [n, t] of Object.entries(rep.tables)) L.push(t.skipped ? `| ${n} | | | | | | ${t.skipped} |` : `| ${n} | ${t.backup} | ${t.live} | ${t.same} | ${t.added} | ${t.differs.length} | ${t.ignored} |`);
+  const total = Object.values(rep.tables).reduce((s, t) => s + (t.added || 0), 0);
+  L.push("", total ? `**${total} row(s) ${rep.applied ? "restored" : "would be restored"}.**` : "**Nothing to restore: the live database already has everything in this backup.**");
+  for (const [n, t] of Object.entries(rep.tables)) {
+    if (t.added) L.push("", `Restored rows, \`${n}\` ids (remove any you had deleted on purpose): ${t.added_ids.slice(0, CAP).join(", ")}${t.added > CAP ? ", …" : ""}`);
+    if (t.differs.length) L.push("", `Kept live version, \`${n}\` differs: ${t.differs.slice(0, CAP).map((d) => `#${d.id} (${d.columns.join(",")})`).join(", ")}${t.differs.length > CAP ? ", …" : ""}`);
+  }
+  return L.join("\n");
+}
+
 /** Replay a dump into an EMPTY database, atomically (one transaction; FK checks deferred to commit). */
 export async function restoreDb(db, dump) {
   const existing = (await db.execute("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")).rows[0].n;

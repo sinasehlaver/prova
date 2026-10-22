@@ -23,7 +23,7 @@ test("auth required; members list is id+name only, active only", async () => {
   assert.deepEqual(Object.keys(m[0]).sort(), ["id", "name"]);
 });
 
-test("create + everyone lists it with booker name and people count (default 1)", async () => {
+test("create + everyone lists it with booker name and people count (default 0)", async () => {
   const s = day(1);
   const r = await book(t.member, s, 2, { note: "  grup provası ", people: 4 });
   assert.equal(r.status, 201);
@@ -69,7 +69,7 @@ test("validation: max duration, min 1h, past start, non-hour-aligned, bad people
   assert.equal((await book(t.member, day(5), 1.5)).status, 400);
   assert.equal((await book(t.member, day(5) + 30 * 60_000, 1)).status, 400);
   assert.equal((await book(t.member, EARLIEST_MS - H, 1)).status, 400); // before the floor
-  for (const people of [0, -1, 2.5, 21, "3"]) assert.equal((await book(t.member, day(5), 1, { people })).status, 400, `people=${people}`);
+  for (const people of [-1, 2.5, 21, "3"]) assert.equal((await book(t.member, day(5), 1, { people })).status, 400, `people=${people}`);
   assert.equal((await book(t.member, undefined, 1)).status, 400);
 });
 
@@ -290,4 +290,23 @@ test("PATCH /reservations/:id: owner edits time/people/note, charge re-priced, o
   assert.equal((await patch(a.id, { start_ms: s + 11 * H, hours: 2 })).status, 400); // curfew
   assert.equal((await patch(999999, { start_ms: s, hours: 1 })).status, 404);
   assert.equal((await t.fetch(`/api/reservations/${a.id}`, { method: "PATCH", body: {} })).status, 401);
+});
+
+test("members lock out 1 h before start (edit + cancel); outside the window ok; admin unaffected", async () => {
+  const { updateReservation, cancelReservation, EDIT_CUTOFF_MS } = await import("./lib/reservations.mjs");
+  assert.equal(EDIT_CUTOFF_MS, H);
+  const s = day(91);
+  const a = await (await book(t.member, s, 1)).json();
+  const patch = (id, as, body) => t.fetch(`/api/reservations/${id}`, { method: "PATCH", as, body });
+  // exactly 1 h before start: still allowed (edit); 59 min before: blocked
+  await updateReservation(t.db, a.id, t.member, { startMs: s, hours: 1, note: "x", now: s - H });
+  await assert.rejects(updateReservation(t.db, a.id, t.member, { startMs: s, hours: 1, now: s - H + 60_000 }), (e) => e.status === 409);
+  await assert.rejects(cancelReservation(t.db, a.id, t.member, { now: s - H + 60_000 }), (e) => e.status === 409);
+  // admin edit/cancel inside the window still works
+  await updateReservation(t.db, a.id, t.admin, { startMs: s, hours: 1, now: s - 60_000 }).catch((e) => assert.equal(e.status, 403)); // not booker: 403 (unchanged)
+  const b = await (await book(t.member, s + 3 * H, 1)).json();
+  await cancelReservation(t.db, b.id, t.admin, { reason: "iptal nedeni", confirm: t.member.name.split(" ")[0], now: s + 3 * H - 60_000 });
+  // member cancel at exactly the cutoff works
+  await cancelReservation(t.db, a.id, t.member, { now: s - H });
+  assert.equal((await patch(a.id, t.member, { start_ms: s, hours: 1 })).status, 404);
 });

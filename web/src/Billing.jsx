@@ -2,6 +2,7 @@
 // lib/billing.mjs / lib/payments.mjs). A member can upload a PDF; it lands as a 'pending' receipt that affects no
 // balance until an admin reviews it (AdminBilling -> Payments/UserDetail). The shared pieces below are reused there.
 import React, { useEffect, useRef, useState } from "react";
+import usePoll from "./usePoll.js";
 import "./billing.css";
 import { api, apiUpload } from "./api.js";
 import { tr } from "./tr.js";
@@ -40,7 +41,7 @@ export function itemTitle(it) {
   if (it.kind === "subscription") return it.status === "upcoming" ? tr.billing.future.planned : tr.billing.subscription;
   if (it.kind === "adjustment") return it.note || tr.billing.adjustment;
   const r = it.reservation;
-  return r ? `${tr.billing.booking} · ${dayTime.format(r.start_ms)}–${fmtTime(r.end_ms)}${r.people > 1 ? ` · ${tr.cal.peopleCount(r.people)}` : ""}` : tr.billing.booking;
+  return r ? `${tr.billing.booking} · ${dayTime.format(r.start_ms)}–${fmtTime(r.end_ms)}${r.people > 0 ? ` · ${tr.cal.peopleCount(r.people)}` : ""}` : tr.billing.booking;
 }
 
 /** Title for a receipt's covered charge (listReceipts' `charges` shape - no `reservation`/`status`, just kind/note). */
@@ -52,15 +53,17 @@ export const chargeName = (c) => (c.kind === "subscription" ? tr.billing.subscri
  * where the surplus went (the month's other items, then credit the community owes). `owedLabel` lets the caller
  * phrase the last row in their own voice (admin: third person "üyeye borçlu"; member: second person "sana borçlu").
  */
-export function PaySummary({ count, sum, paid, spill, owed, saved, paidLabel = tr.admin.pay.paid, owedLabel = tr.admin.pay.owed, children }) {
-  const left = Math.max(0, sum - paid);
+export function PaySummary({ count, sum, paid, spill, owed, saved, credit = 0, paidLabel = tr.admin.pay.paid, owedLabel = tr.admin.pay.owed, children }) {
+  const left = Math.max(0, sum - credit - paid);
   const P = tr.admin.pay;
   return (
     <dl className="pay-sum">
       <div><dt>{P.selectedSum(count)}</dt><dd className="amount">{fmtTRY(sum)}</dd></div>
-      <div className="pay-paid"><dt>{children ? children[0] : paidLabel}</dt><dd className="amount">{children ? children[1] : fmtTRY(paid)}</dd></div>
-      {paid > 0 && left > 0 && <div className="pay-out warn"><dt>{P.left}</dt><dd className="amount">{fmtTRY(left)}</dd></div>}
-      {paid > 0 && left === 0 && spill === 0 && owed === 0 && <div className="pay-out good"><dt>{P.exact}</dt><dd><CheckG /></dd></div>}
+      {credit > 0 && <div className="pay-credit-row"><dt>{P.creditMinus}</dt><dd className="amount">−{fmtTRY(credit)}</dd></div>}
+      {credit > 0 && <div><dt>{P.toPay}</dt><dd className="amount">{fmtTRY(Math.max(0, sum - credit))}</dd></div>}
+      {(children || paid > 0 || !credit) && <div className="pay-paid"><dt>{children ? children[0] : credit > 0 ? P.payNow : paidLabel}</dt><dd className="amount">{children ? children[1] : fmtTRY(paid)}</dd></div>}
+      {(paid > 0 || credit > 0) && left > 0 && <div className="pay-out warn"><dt>{P.left}</dt><dd className="amount">{fmtTRY(left)}</dd></div>}
+      {(paid > 0 || credit > 0) && left === 0 && spill === 0 && owed === 0 && <div className="pay-out good"><dt>{P.exact}</dt><dd><CheckG /></dd></div>}
       {spill > 0 && <div className="pay-out"><dt>{saved ? P.spillSaved : P.spill}</dt><dd className="amount">{fmtTRY(spill)}</dd></div>}
       {owed > 0 && <div className="pay-out good"><dt>{owedLabel}</dt><dd className="amount">{fmtTRY(owed)}</dd></div>}
     </dl>
@@ -232,24 +235,50 @@ export function ItemList({ items, selectable, selected, onToggle, extra, empty =
  * `charges`/`expected_try`/`paid_try`/`spill_try`/`overpaid_try` (listReceipts, scoped to the caller's own user_id).
  */
 /** "Dekontu sil" button + ConfirmSheet; `onDelete` does the request. Callers only render it when the receipt is deletable (not 'ok'). */
-export function DeleteReceipt({ onDelete }) {
+export function DeleteReceipt({ onDelete, paid = false }) {
   const [sure, setSure] = useState(false);
+  const D = tr.billing.del, btn = paid ? D.okBtn : D.btn;
   return (
     <>
-      <button type="button" className="btn danger" onClick={() => setSure(true)}>{tr.billing.del.btn}</button>
-      {sure && <ConfirmSheet title={tr.billing.del.title} body={tr.billing.del.body} confirmLabel={tr.billing.del.btn} danger onClose={() => setSure(false)} onConfirm={onDelete} />}
+      <button type="button" className="btn danger" onClick={() => setSure(true)}>{btn}</button>
+      {sure && <ConfirmSheet title={paid ? D.okTitle : D.title} body={paid ? D.okBody : D.body} confirmLabel={btn} danger onClose={() => setSure(false)} onConfirm={onDelete} />}
     </>
   );
 }
 
-export function ReceiptRow({ r, onDelete, children }) {
+/** Member edits a rejected own upload (new PDF and/or a message) and sends it back to review. */
+function ResubmitForm({ r, onDone, onCancel }) {
+  const R = tr.billing.resubmit;
+  const [file, setFile] = useState(null), [msg, setMsg] = useState(""), [busy, setBusy] = useState(false), [err, setErr] = useState("");
+  const send = async (e) => {
+    e.preventDefault(); setBusy(true); setErr("");
+    try { await apiUpload(`/billing/receipts/${r.id}/resubmit?message=${encodeURIComponent(msg.trim())}${file ? `&filename=${encodeURIComponent(file.name)}` : ""}`, file); onDone(); }
+    catch (x) { setErr(x.message || tr.err.generic); setBusy(false); }
+  };
+  return (
+    <form className="resubmit" onSubmit={send}>
+      <p className="hint">{R.hint}</p>
+      <label className="btn file"><input type="file" accept="application/pdf,.pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} disabled={busy} /><UploadG width="16" height="16" />{file ? file.name : R.pick}</label>
+      <label className="field"><span>{R.note}</span><input maxLength={300} value={msg} onChange={(e) => setMsg(e.target.value)} /></label>
+      {err && <p className="hint" role="alert">{err}</p>}
+      <div className="row end wrap">
+        <button type="button" className="btn ghost" onClick={onCancel} disabled={busy}>{R.cancel}</button>
+        <button className="btn primary" disabled={busy}>{R.send}</button>
+      </div>
+    </form>
+  );
+}
+
+export function ReceiptRow({ r, onDelete, onResubmitted, children }) {
+  const [editing, setEditing] = useState(false);
+  const rejected = r.status === "mismatch" && r.charges.length === 0;
   const ok = r.status === "ok";
   const picked = r.charges.filter((c) => c.selected !== false);
   return (
     <li className="card rcpt">
       <div className="rcpt-head">
         <span className="rcpt-name">{r.filename || `Dekont #${r.id}`}</span>
-        <StatusPill status={ok ? "paid" : undefined} flag={ok ? undefined : r.status} partial={ok && r.remaining_try > 0} />
+        {rejected ? <span className="pill warn">{tr.billing.rejectedPill}</span> : <StatusPill status={ok ? "paid" : undefined} flag={ok ? undefined : r.status} partial={ok && r.remaining_try > 0} />}
       </div>
       <p className="rcpt-msg">{r.message}</p>
       {picked.length > 0 && (
@@ -265,13 +294,15 @@ export function ReceiptRow({ r, onDelete, children }) {
           </ul>
         </div>
       )}
-      {ok && <PaySummary saved count={picked.length} sum={r.expected_try} paid={r.paid_try} spill={r.spill_try} owed={r.overpaid_try}
-        paidLabel={r.from_credit ? tr.admin.pay.creditUsed : tr.admin.pay.paid} owedLabel={tr.billing.owedSelf} />}
+      {ok && <PaySummary saved count={picked.length} sum={r.expected_try} paid={r.cash_try ?? r.paid_try} credit={r.credit_try ?? 0} spill={r.spill_try} owed={r.overpaid_try}
+        paidLabel={tr.admin.pay.paid} owedLabel={tr.billing.owedSelf} />}
       <div className="row wrap">
         {r.has_pdf && <a className="link" href={`/api/receipts/${r.id}/pdf`} target="_blank" rel="noreferrer">{tr.billing.view}</a>}
         <span className="muted small">{dayTime.format(r.uploaded_at)}</span>
+        {rejected && onResubmitted && !editing && <button type="button" className="btn" onClick={() => setEditing(true)}>{tr.billing.resubmit.btn}</button>}
         {onDelete && r.status !== "ok" && !String(r.admin_note ?? "").startsWith("Yönetici kaydetti") && <DeleteReceipt onDelete={() => onDelete(r)} />}
       </div>
+      {editing && <ResubmitForm r={r} onCancel={() => setEditing(false)} onDone={() => { setEditing(false); onResubmitted(r); }} />}
       {children}
     </li>
   );
@@ -322,6 +353,7 @@ export default function Billing() {
     } catch (e) { setLoadErr(e.message || tr.err.load); say(e.message || tr.err.generic); }
   };
   useEffect(() => { load(); }, []);
+  usePoll((ok) => api("GET", "/billing" + (data?.month ? `?month=${data.month}` : "")).then((d) => { if (ok()) setData(d); }), { enabled: !!data });
 
   const upload = async (e) => {
     const f = e.target.files?.[0];
@@ -372,7 +404,7 @@ export default function Billing() {
       {data.receipts.length > 0 && (
         <>
           <h3 className="sec-title">{tr.billing.receipts}</h3>
-          <ul className="list">{data.receipts.map((r) => <ReceiptRow key={r.id} r={r} onDelete={removeReceipt} />)}</ul>
+          <ul className="list">{data.receipts.map((r) => <ReceiptRow key={r.id} r={r} onDelete={removeReceipt} onResubmitted={async () => { say(tr.billing.resubmit.done); await load(data?.month); }} />)}</ul>
         </>
       )}
       <div className={"toast" + (toast ? " show" : "")} role="status">{toast}</div>

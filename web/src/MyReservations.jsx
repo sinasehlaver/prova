@@ -5,7 +5,7 @@ import { fmtTRY } from "./Billing.jsx";
 import { NewSheet } from "./Calendar.jsx";
 import { ChevronRightIcon } from "./icons.jsx";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
-import { D, H, dayStart } from "./time.js";
+import { D, EDIT_CUTOFF_MS, H, dayStart } from "./time.js";
 
 const TZ = "Europe/Istanbul";
 const fmt = (ms) => new Intl.DateTimeFormat("tr-TR", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: TZ }).format(ms);
@@ -62,7 +62,8 @@ export default function MyReservations() {
   const now = Date.now();
   const toggle = (m) => setOpen((o) => { const n = new Set(o); if (n.has(m)) n.delete(m); else n.add(m); return n; });
   const item = (r) => {
-    const can = !r.cancelled_at && r.start_ms > now;
+    const can = !r.cancelled_at && r.start_ms - EDIT_CUTOFF_MS >= now;
+    const locked = !r.cancelled_at && !can && r.start_ms > now;
     return (
       <li key={r.id} className={r.cancelled_at ? "gone" : ""}>
         <span>
@@ -72,6 +73,7 @@ export default function MyReservations() {
           ) : (
             <> <button className="btn sm" onClick={() => startEdit(r)}>{T.edit}</button> <button className="btn sm danger" onClick={() => setSure(r.id)}>{tr.cal.cancelBooking}</button></>
           ))}
+          {locked && <> <span className="muted small">{tr.cal.locked}</span></>}
         </span>
         <span className="num">{fmtTRY(r.charge_try ?? 0)}</span>
       </li>

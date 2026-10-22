@@ -3,10 +3,12 @@ import { api, AUTH_EVENT } from "./api.js";
 import { tr } from "./tr.js";
 import { BellIcon, CalendarIcon, MoonIcon, ShieldIcon, SunIcon, WalletIcon, ListIcon } from "./icons.jsx";
 import Admin from "./Admin.jsx";
+import { tabOf, go } from "./nav.js";
 import Billing from "./Billing.jsx";
 import MyReservations from "./MyReservations.jsx";
 import Calendar from "./Calendar.jsx";
 import Alerts, { AlertBadges } from "./Alerts.jsx";
+import useReceiptCount from "./useReceiptCount.js";
 import AlertKinds from "./AlertKinds.jsx";
 import Profile from "./Profile.jsx";
 import { Boot, ErrorState, Skeleton } from "./States.jsx";
@@ -169,7 +171,7 @@ function Pending({ me, recheck, onLogout }) {
 
 export default function App() {
   const [me, setMe] = useState(undefined); // undefined = loading, null = logged out
-  const [tab, setTab] = useState(() => location.hash.slice(1) || "calendar");
+  const [tab, setTab] = useState(tabOf);
   const [theme, setTheme] = useState(currentTheme);
 
   const [bootErr, setBootErr] = useState(false);
@@ -195,7 +197,7 @@ export default function App() {
     return () => { window.removeEventListener("focus", go); window.removeEventListener(AUTH_EVENT, go); document.removeEventListener("visibilitychange", vis); };
   }, [recheck]);
   useEffect(() => {
-    const onHash = () => setTab(location.hash.slice(1) || "calendar");
+    const onHash = () => setTab(tabOf());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -243,8 +245,9 @@ function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
   const tabs = TABS.filter((t) => (!t.admin || me.role === "admin") && (!t.booker || me.role !== "listener"));
   const active = tabs.find((t) => t.id === tab) ? tab : "calendar";
   const pendingCount = usePendingCount(me.role === "admin");
+  const receiptCount = useReceiptCount(me.role === "admin");
   // the URL hash always names the tab that is actually rendered (no #admin for a non-admin)
-  useEffect(() => { if (location.hash.slice(1) !== active) history.replaceState(null, "", "#" + active); }, [active]);
+  useEffect(() => { if (tabOf() !== active) go(active, { replace: true }); }, [active]);
 
   return (
     <div className="shell">
@@ -262,15 +265,18 @@ function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
         </button>
       </header>
       <main className="page" key={`${me.id}:${me.role}`}>
-        {active === "admin" ? <AdminGate me={me} recheck={recheck}><Admin me={me} extra={<AlertKinds />} pendingCount={pendingCount} /></AdminGate> : active === "payments" ? <Billing /> : active === "alerts" ? <Alerts /> : active === "myRes" ? <MyReservations /> : active === "calendar" ? <Calendar me={me} /> : <Placeholder id={active} />}
+        {active === "admin" ? <AdminGate me={me} recheck={recheck}><Admin me={me} extra={<AlertKinds />} pendingCount={pendingCount} receiptCount={receiptCount} /></AdminGate> : active === "payments" ? <Billing /> : active === "alerts" ? <Alerts /> : active === "myRes" ? <MyReservations /> : active === "calendar" ? <Calendar me={me} /> : <Placeholder id={active} />}
       </main>
       <nav className="tabbar" aria-label="Ana menü">
         {tabs.map(({ id, Icon }) => (
-          <button key={id} className="tab" aria-current={active === id ? "page" : undefined} onClick={() => setTab(id)}>
+          <button key={id} className="tab" aria-current={active === id ? "page" : undefined} onClick={() => go(id)}>
             <span className="tab-icon">
               <Icon />
               {id === "admin" && pendingCount > 0 && (
                 <span className="count-badge" data-count={pendingCount > 99 ? "99+" : pendingCount} role="status" aria-label={tr.members.pendingCount(pendingCount)} />
+              )}
+              {id === "admin" && pendingCount === 0 && receiptCount > 0 && (
+                <span className="count-badge is-accent" data-count={receiptCount > 99 ? "99+" : receiptCount} role="status" aria-label={tr.members.pendingReceipts(receiptCount)} />
               )}
             </span>
             <span>{tr.tabs[id]}</span>

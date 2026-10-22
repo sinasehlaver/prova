@@ -107,14 +107,15 @@ Go to the **Takvim** (Calendar) tab.
   month's bill and that only an admin can cancel it afterwards.
 - While you have the booking sheet open, that time slot is held for ~2 minutes
   so nobody else can grab it out from under you.
-- To cancel your own booking, open it and confirm. Admins can cancel *other*
+- To cancel your own booking, open it and confirm. You can do that up to 1 hour
+  before it starts; after that only an admin can change it. Admins can cancel *other*
   members' bookings too, but only after typing the booker's name and a reason
   — that gets logged. Only admins can also cancel **past** (already started)
   bookings, with the same name + reason check; unpaid charges are voided, paid
   ones stay.
 - **Rezervasyonlarım** (My reservations) lists your own bookings grouped by
   month (newest first, collapsed by default), with paid/unpaid totals per month
-  and overall. You can edit or cancel an upcoming booking from there.
+  and overall. You can edit or cancel a booking from there until 1 hour before it starts (the buttons disappear after that).
 
 ### Paying your dues
 
@@ -169,8 +170,8 @@ Everything above, plus, under **Yönetim** (Admin):
   left to pay or what the community will owe the member; a dekont PDF is
   optional (cash is fine). One payment can cover items from other months too
   (older debt, next month's bookings, or prepaying next month's dues, listed
-  under "Diğer aylar"), and **Alacaktan öde** spends the member's existing
-  credit on the ticked items instead of new money. Once saved it becomes a read-only green
+  under "Diğer aylar"), and the **Alacağı hesaba kat** checkbox applies the member's existing
+  credit to the payment instead of new money. Once saved it becomes a read-only green
   "Kaydedildi" card: covered items, their total, the paid amount, the result,
   and the PDF if there is one. Member-uploaded dekonts show up as the same
   kind of draft ("Onay bekliyor") — pick the items + amount and approve, or

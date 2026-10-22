@@ -74,14 +74,19 @@ Cost: **$0**. Two layers: Turso's built-in 1-day point-in-time restore (fast, la
 5. Secrets in the *prova* repo (Settings -> Secrets -> Actions): `DATABASE_URL`, `BACKUP_DATABASE_AUTH_TOKEN`, `BACKUP_KEY`, `BACKUP_REPO_TOKEN`, `BACKUP_REPO` (`owner/prova-backups`).
 6. Run once: Actions -> backup -> Run workflow. Check the release appears in the backups repo. A failed daily run emails you. GitHub pauses scheduled workflows after 60 days with no repo activity - re-enable in the Actions tab if it happens.
 
-**Restore (target: minutes)**
-```sh
-gh release download backup-YYYY-MM-DD --repo owner/prova-backups      # newest good one
-turso db create prova-restored --location fra                          # must be EMPTY
-export BACKUP_KEY=...  DATABASE_URL=$(turso db show prova-restored --url)  DATABASE_AUTH_TOKEN=$(turso db tokens create prova-restored)
-node scripts/restore.mjs prova-YYYY-MM-DD.bak.enc                       # prints per-table row counts
-```
-Then set Render's `DATABASE_URL` / `DATABASE_AUTH_TOKEN` to the new DB and redeploy (the app skips migrations already recorded in the dump). Everyone stays logged in (tokens restored). Loss window = up to 24 h of bookings/payments; for a problem noticed within a day, Turso's own PITR (`turso db create prova-restored --from-db prova --timestamp <ISO>`) loses less. Restore locally first to rehearse: `DATABASE_URL=file:/tmp/r.db node scripts/restore.mjs <file>`.
+**Restore (additive, never overwrites)** - workflow `.github/workflows/restore.yml`, needs one extra secret: `DATABASE_AUTH_TOKEN` = the full-access Turso token (same value as in Render; the backup job only uses the read-only one).
+
+Restore only **adds rows that are missing** from the live database. It never edits or deletes an existing row, so bookings/payments made after the backup are safe. A row that exists in both but differs keeps the live version and is listed in the report.
+
+1. GitHub -> *prova* repo -> **Actions -> restore -> Run workflow**. Leave `backup` = `latest` (or type a tag like `backup-2026-10-20` from the backups repo Releases) and leave **apply unticked**.
+2. Open the finished run -> the summary at the bottom is the **dry-run report**: per table how many rows would be restored, which ids, which rows differ. Nothing has changed yet. "Nothing to restore" = the DB already has everything.
+3. Happy with it? Run the workflow again with **apply ticked**. Run it a third time to confirm: it should say nothing to restore.
+
+Notes
+- The report is public (public repo Actions log), so it shows table names and ids only, never names/tokens. Rows a backup brings back may include things you deleted on purpose after the backup (rejected signups, deleted dekonts): the report lists their ids, delete them again in the app.
+- **Database completely gone**: create a new empty Turso DB (`turso db create prova2 --location fra`), put its URL/token into the GitHub secrets `DATABASE_URL` + `DATABASE_AUTH_TOKEN` (and `turso db tokens create prova2 --read-only` into `BACKUP_DATABASE_AUTH_TOKEN`), run restore (an empty DB gets a full restore), and **only then** point Render's `DATABASE_URL`/`DATABASE_AUTH_TOKEN` at it and redeploy. If the app boots on the empty DB first it seeds demo data; use a fresh empty DB again.
+- Everyone stays logged in (tokens restored). Loss window = up to 24 h; for a problem noticed within a day, Turso's PITR (`turso db create prova-restored --from-db prova --timestamp <ISO>`) loses less.
+- Terminal alternative / rehearsal: `BACKUP_KEY=... DATABASE_URL=file:/tmp/r.db node scripts/restore.mjs <file.bak.enc> [--apply]` (dry run without `--apply`).
 
 Also available, separately: **Yönetim -> Ayarlar -> Yedek / dışa aktar** (JSON + charges CSV, tokens omitted) - a human-readable export, *not* a restore source.
 
@@ -100,3 +105,14 @@ npm run build && PORT=4700 DATABASE_URL=file:/tmp/prova-try.db npm start     # m
 - Single instance only (in-process mutex serialises writes). Don't scale the Render service past 1.
 - Cold start = first request after 15 min idle takes ~1 min. Members reopening the PWA see Render's loading page, then "Oda uyanıyor…", then the app. A cron pinger would defeat the sleep but burns instance hours (750/mo cap ≈ 31 days × 24 h, so it just fits); not configured.
 - The Turso path (`libsql://` + token) is covered by a unit test of the option wiring only (`server/deploy.test.mjs`) — it has **not** been run against a real Turso database. First deploy = first real test: check the Render log for migration errors.
+
+## Deleting one user (hard delete)
+
+Take a backup first (`BACKUP_KEY=... node scripts/backup.mjs`). Then, with the Turso URL/token in the environment:
+
+```
+DATABASE_URL=libsql://prova-<you>.turso.io DATABASE_AUTH_TOKEN=<full-access token> node scripts/delete-user.mjs <user-id>           # dry run: counts
+DATABASE_URL=... DATABASE_AUTH_TOKEN=... node scripts/delete-user.mjs <user-id> --apply   # one transaction
+```
+
+Find the id: `turso db shell prova "SELECT id,name,role FROM users"`. Removes the user's reservations (and everyone's charges/audit/attendee rows tied to them), charges, receipts, credits, holds and alerts. Refuses the lowest id (hidden bootstrap observer), the last admin, and users whose receipts pay other people's charges. A restore from a backup taken earlier resurrects the user.

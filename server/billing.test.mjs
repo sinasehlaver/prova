@@ -25,8 +25,8 @@ const mk = async (name) => { // fresh member (own sub charge, no bookings)
 const bill = async (as, month = M) => J(await t.fetch(`/api/billing?month=${month}`, { as }));
 const body = (file) => (file == null ? undefined : typeof file === "string" ? fx(file) : file);
 /** Admin records a payment for `u` (raw PDF body, optional). The self-serve member upload is switched off. */
-const record = (u, { month = M, charges, amount, file = null, name = typeof file === "string" ? file : undefined, note, fromCredit, as = t.admin } = {}) =>
-  fetch(`${t.base}/api/admin/users/${u.id}/receipts?month=${month}&amount_try=${amount}${fromCredit ? "&from_credit=1" : ""}` +
+const record = (u, { month = M, charges, amount, file = null, name = typeof file === "string" ? file : undefined, note, fromCredit, creditTry, as = t.admin } = {}) =>
+  fetch(`${t.base}/api/admin/users/${u.id}/receipts?month=${month}${amount === undefined ? "" : `&amount_try=${amount}`}${creditTry === undefined ? "" : `&credit_try=${creditTry}`}${fromCredit ? "&from_credit=1" : ""}` +
     `${charges ? `&charges=${charges.join(",")}` : ""}${name ? `&filename=${name}` : ""}${note ? `&note=${encodeURIComponent(note)}` : ""}`, {
     method: "POST", headers: { "content-type": "application/pdf", cookie: `${COOKIE}=${as.invite_token}` }, body: body(file),
   });
@@ -104,6 +104,36 @@ test("setFee any month: re-prices only UNPAID charges, other months untouched", 
   await admin("/fees", { method: "POST", body: { effective_from: bm, subscription_try: prevFee.subscription_try, booking_try: prevFee.booking_try } });
 });
 
+test("fee changed after payment, then dekont deleted: subscription charge shows the NEW fee", async () => {
+  const u = await mk("FeeAfterPaid");
+  await ensureMonth(t.db, u, M);
+  const prevFee = await feeFor(t.db, M);
+  const sid = (await bill(u)).items.find((i) => i.kind === "subscription").id;
+  const rec = await record(u, { amount: 1500, charges: [sid] });
+  assert.equal(rec.status, 201);
+  const rid = (await t.db.execute({ sql: "SELECT id FROM receipts WHERE user_id = ? ORDER BY id DESC LIMIT 1", args: [u.id] })).rows[0].id;
+  await admin("/fees", { method: "POST", body: { effective_from: M, subscription_try: 2100, booking_try: prevFee.booking_try } });
+  assert.equal(sub(await bill(u)).amount_try, 1500); // paid: untouched
+  assert.equal((await admin(`/receipts/${rid}`, { method: "DELETE" })).status, 200);
+  assert.equal(sub(await bill(u)).amount_try, 2100);
+  await admin("/fees", { method: "POST", body: { effective_from: M, subscription_try: prevFee.subscription_try, booking_try: prevFee.booking_try } });
+});
+
+test("free reservation (people 0, the default): a normal reservation with no charge; editing to paying adds one, back to 0 voids it", async () => {
+  const a = await mk("Bedava");
+  const res = await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: day(2), hours: 1 } });
+  assert.equal(res.status, 201);
+  const { id, people } = await J(res);
+  assert.equal(people, 0);
+  const q = () => t.db.execute({ sql: "SELECT * FROM charges WHERE reservation_id = ? AND voided_at IS NULL", args: [id] });
+  assert.equal((await q()).rows.length, 0);
+  const put = (n) => t.fetch(`/api/reservations/${id}`, { method: "PATCH", as: a, body: { start_ms: day(2), hours: 1, people: n } });
+  assert.equal((await put(2)).status, 200);
+  assert.equal((await q()).rows[0].amount_try, 1000);
+  assert.equal((await put(0)).status, 200);
+  assert.equal((await q()).rows.length, 0);
+});
+
 test("booking charge: ONE charge on the booker = people x fee, voided on cancel, kalan sums unpaid", async () => {
   const a = await mk("Bir"), b = await mk("Iki");
   const res = await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: day(1), hours: 2, people: 3 } });
@@ -127,7 +157,7 @@ test("booking charge: ONE charge on the booker = people x fee, voided on cancel,
   assert.equal(va2.items.find((i) => i.kind === "booking").status, "voided");
   assert.equal(va2.kalan, month === M ? 1500 : 0);
   // a PAID booking charge survives the cancel
-  const r2 = await J(await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: day(3), hours: 1 } }));
+  const r2 = await J(await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: day(3), hours: 1, people: 1 } }));
   const rcpt = (await t.db.execute({ sql: "INSERT INTO receipts (user_id, month, sha256, status, uploaded_at) VALUES (?,?,?,?,?)", args: [a.id, month, "x" + r2.id, "ok", 1] })).lastInsertRowid;
   await t.db.execute({ sql: "UPDATE charges SET paid_receipt_id = ?, paid_by = 'admin' WHERE reservation_id = ?", args: [rcpt, r2.id] });
   assert.equal((await t.fetch(`/api/reservations/${r2.id}`, { method: "DELETE", as: a })).status, 200);
@@ -495,7 +525,8 @@ test("admin undo: reject un-ticks a recorded payment, approve puts it back in fu
   assert.equal(sub(v).status, "unpaid");
   assert.equal(v.kalan, 1500);
   assert.equal(sub(v).flag, null); // admin-rejected: no "!" flag, message lives on the receipt
-  assert.equal((await J(await admin(`/receipts?status=mismatch&user_id=${u.id}`))).length, 1);
+  assert.equal((await J(await admin(`/receipts?status=mismatch&user_id=${u.id}`))).length, 0); // undone admin records are hidden from admin lists
+  assert.equal((await J(await admin(`/users/${u.id}/receipts`))).length, 0);
 
   const ap = await J(await admin(`/receipts/${rec.id}/approve`, { method: "POST", body: {} }));
   assert.equal(ap.status, "ok");
@@ -696,6 +727,61 @@ test("credit looks forward (display-only) and can pay a future month's rent expl
   assert.equal(sub(await bill(u, NEXT)).status, "paid");
 });
 
+test("credit mixed with cash in one receipt (Alacağı hesaba kat): selected flags, limits, authz, undo restores credit", async () => {
+  const u = await mk("Karma Ödeme");
+  await admin(`/charges/${sub(await bill(u)).id}/waive`, { method: "POST", body: {} });
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 200, note: "pedal" } });
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 300, note: "kablo" } });
+  const [pedal, kablo] = (await bill(u)).items.filter((i) => i.kind === "adjustment");
+  await record(u, { charges: [pedal.id], amount: 700 }); // 500 surplus -> spills onto kablo (300), 200 credit
+  assert.equal((await bill(u)).credit.balance_try, 200);
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 500, note: "mikrofon" } });
+  const mic = (await bill(u)).items.find((i) => i.note === "mikrofon");
+  const bad = (q) => record(u, { charges: [mic.id], ...q });
+  assert.equal((await bad({ amount: 300, creditTry: 300 })).status, 400); // > credit (200)
+  assert.equal((await bad({ amount: 0, creditTry: 0 })).status, 400);
+  assert.equal((await bad({ creditTry: -5 })).status, 400);
+  assert.equal((await bad({ amount: 100, creditTry: 200, file: "ziraat-1500.pdf" })).status, 201); // PDF fine with cash (stored)
+  assert.equal((await bill(u)).credit.balance_try, 0);
+  const u2 = await mk("Karma Ödeme 2");
+  await admin(`/users/${u2.id}/charges`, { method: "POST", body: { month: M, amount_try: 200, note: "x" } });
+  const x = (await bill(u2)).items.find((i) => i.note === "x");
+  assert.equal((await record(u2, { charges: [x.id], amount: 100, creditTry: 50 })).status, 400); // no credit at all
+  // mixed: 300 selected = 100 credit + 200 cash, credit later undone
+  const u3 = await mk("Karma Ödeme 3");
+  await admin(`/charges/${sub(await bill(u3)).id}/waive`, { method: "POST", body: {} });
+  await admin(`/users/${u3.id}/charges`, { method: "POST", body: { month: M, amount_try: 200, note: "a" } });
+  await admin(`/users/${u3.id}/charges`, { method: "POST", body: { month: M, amount_try: 300, note: "b" } });
+  const [a, b] = (await bill(u3)).items.filter((i) => i.kind === "adjustment");
+  await record(u3, { charges: [a.id], amount: 300 }); // 100 surplus spills to b, no credit...
+  await admin(`/users/${u3.id}/charges`, { method: "POST", body: { month: M, amount_try: 1000, note: "c" } });
+  const c = (await bill(u3)).items.find((i) => i.note === "c");
+  await record(u3, { charges: [c.id], amount: 1500 }); // 500 surplus: 200 spills to b, 300 -> credit
+  assert.equal((await bill(u3)).credit.balance_try, 300);
+  await admin(`/users/${u3.id}/charges`, { method: "POST", body: { month: M, amount_try: 300, note: "d" } });
+  const d = (await bill(u3)).items.find((i) => i.note === "d");
+  assert.equal((await record(u3, { charges: [d.id], amount: 200, creditTry: 400, as: t.member })).status, 403); // authz unchanged
+  assert.equal((await record(u3, { charges: [d.id], amount: 0, creditTry: 400 })).status, 400); // credit > balance/picked total
+  const out = await J(await record(u3, { charges: [d.id], amount: 200, creditTry: 100 }));
+  assert.equal(out.status, "ok");
+  assert.deepEqual([out.expected_try, out.applied_try, out.credit_try, out.cash_try, out.paid_try, out.overpaid_try], [300, 300, 100, 200, 300, 0]);
+  assert.equal(out.from_credit, false);
+  assert.deepEqual(out.charges.map((x) => x.selected), [true]);
+  assert.equal((await bill(u3)).credit.balance_try, 200);
+  await admin(`/receipts/${out.id}/reject`, { method: "POST", body: { note: "geri al" } });
+  assert.equal((await bill(u3)).credit.balance_try, 300);
+  // cash surplus on top of credit: 300 selected, 100 credit + 300 cash -> 100 over becomes new credit (net -100+100)
+  const out2 = await J(await record(u3, { charges: [d.id], amount: 300, creditTry: 100 }));
+  assert.deepEqual([out2.credit_try, out2.overpaid_try, out2.cash_try], [100, 100, 300]);
+  assert.equal((await bill(u3)).credit.balance_try, 300); // -100 used, +100 surplus
+  // pure credit via the new params (cash 0)
+  await admin(`/users/${u3.id}/charges`, { method: "POST", body: { month: M, amount_try: 200, note: "e" } });
+  const e = (await bill(u3)).items.find((i) => i.note === "e");
+  const out3 = await J(await record(u3, { charges: [e.id], creditTry: 200 }));
+  assert.equal(out3.from_credit, true);
+  assert.equal((await bill(u3)).credit.balance_try, 100);
+});
+
 test("'listener' role is billed exactly like a normal member (subscription charge, appears in overview) but can't book", async () => {
   const listener = await mk("Dinleyici Faturalı");
   await t.db.execute({ sql: "UPDATE users SET role = 'listener' WHERE id = ?", args: [listener.id] });
@@ -806,11 +892,11 @@ test("delete dekont: member own pending/rejected ok, other's 404, ok 409, unauth
   assert.equal((await record(o, { amount: 1 })).status, 201);
   const ok = (await bill(o)).receipts[0];
   assert.equal((await del(`/api/billing/receipts/${ok.id}`, o)).status, 409);
-  assert.equal((await del(`/api/admin/receipts/${ok.id}`, t.admin)).status, 409);
   assert.equal((await del(`/api/admin/receipts/${ok.id}`, o)).status, 403);
-  await admin(`/receipts/${ok.id}/reject`, { method: "POST", body: {} });
+  const kBefore = (await bill(o)).kalan; // 1 TL part-payment counted; admin delete = undo + remove in one step
   assert.equal((await del(`/api/admin/receipts/${ok.id}`, t.admin)).status, 200);
   assert.equal((await bill(o)).receipts.length, 0);
+  assert.equal((await bill(o)).kalan, kBefore + 1);
 
   // member's rejected upload can be deleted by the member
   const p = await J(await upload(u));
@@ -831,4 +917,100 @@ test("IBAN is only in a member's /billing while they owe something; admin view a
   const adm = await J(await admin(`/users/${u.id}/billing?month=${M}`));
   assert.equal(adm.pay_to.iban, "TR330006100519786457841326");
   await admin("/settings", { method: "PUT", body: { iban: "", holder: "", requireRecipient: false } });
+});
+
+test("admin delete of an ok payment restores charges + credit (surplus and from_credit)", async () => {
+  const u = await mk("SilKredi");
+  const b0 = await bill(u), s0 = sub(b0);
+  const over = await J(await record(u, { charges: [s0.id], amount: s0.amount_try + 300 }));
+  assert.equal((await bill(u)).credit.balance_try, 300);
+  assert.equal((await t.fetch(`/api/admin/receipts/${over.id}`, { method: "DELETE", as: t.admin })).status, 200);
+  const b1 = await bill(u);
+  assert.equal(b1.credit.balance_try, 0);
+  assert.equal(sub(b1).status, "unpaid");
+  // surplus again -> spend 300 of it on next month's rent from credit -> delete that from_credit receipt: credit back to 300
+  await record(u, { charges: [s0.id], amount: s0.amount_try + 300 });
+  const fc = await J(await record(u, { month: NEXT, charges: [`sub:${NEXT}`], amount: 300, fromCredit: true }));
+  assert.equal(fc.status, "ok");
+  assert.equal((await bill(u)).credit.balance_try, 0);
+  assert.equal((await t.fetch(`/api/admin/receipts/${fc.id}`, { method: "DELETE", as: t.admin })).status, 200);
+  assert.equal((await bill(u)).credit.balance_try, 300);
+});
+
+test("rejected member upload: hidden from admin lists, member sees reason, can resubmit (authz + state)", async () => {
+  const u = await mk("Yeniden"), o = await mk("Yeniden2");
+  const up = await J(await upload(u));
+  await admin(`/receipts/${up.id}/reject`, { method: "POST", body: { note: "Bulanık" } });
+  assert.equal((await J(await admin(`/receipts?user_id=${u.id}`))).length, 0);
+  assert.equal((await J(await admin(`/users/${u.id}/receipts`))).length, 0);
+  const mine = (await bill(u)).receipts;
+  assert.equal(mine.length, 1);
+  assert.equal(mine[0].status, "mismatch");
+  assert.match(mine[0].message, /Bulanık/);
+  const rs = (id, as, qs = "", body) => fetch(`${t.base}/api/billing/receipts/${id}/resubmit${qs}`, { method: "POST", headers: { "content-type": "application/pdf", ...(as ? { cookie: `${COOKIE}=${as.invite_token}` } : {}) }, body });
+  assert.equal((await rs(up.id, null)).status, 401);
+  assert.equal((await rs(up.id, o)).status, 404); // someone else's
+  assert.equal((await rs(up.id, u, "", Buffer.from("not a pdf"))).status, 400);
+  const ok = await rs(up.id, u, "?message=" + encodeURIComponent("Doğru dekont"));
+  assert.equal(ok.status, 200);
+  const j = await J(ok);
+  assert.equal(j.status, "pending");
+  assert.equal(j.member_note, "Doğru dekont");
+  assert.equal(j.admin_note, null);
+  assert.equal((await J(await admin(`/receipts?user_id=${u.id}&status=pending`))).length, 1);
+  assert.equal((await rs(up.id, u)).status, 409); // pending now, not rejected
+  // an ok (admin-recorded) receipt can't be resubmitted
+  const rec = await J(await record(o, { amount: 1 }));
+  assert.equal((await rs(rec.id, o)).status, 409);
+});
+
+test("GET /api/admin/receipts/pending-count: admin gets the pending count; member 403; anon 401", async () => {
+  assert.equal((await t.fetch("/api/admin/receipts/pending-count")).status, 401);
+  const u = await mk("Sayac");
+  assert.equal((await t.fetch("/api/admin/receipts/pending-count", { as: u })).status, 403);
+  const n0 = (await J(await t.fetch("/api/admin/receipts/pending-count", { as: t.admin }))).count;
+  assert.equal((await upload(u)).status, 201);
+  assert.equal((await J(await t.fetch("/api/admin/receipts/pending-count", { as: t.admin }))).count, n0 + 1);
+});
+
+test("approve a PENDING upload with credit (Alacağı hesaba kat): validation, authz, net overpaid, redo keeps the credit math", async () => {
+  const u = await mk("Onay Alacak");
+  await admin(`/charges/${sub(await bill(u)).id}/waive`, { method: "POST", body: {} });
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 500, note: "ilk" } });
+  const ilk = (await bill(u)).items.find((i) => i.note === "ilk");
+  await record(u, { charges: [ilk.id], amount: 800 }); // 300 surplus = credit
+  assert.equal((await bill(u)).credit.balance_try, 300);
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 300, note: "pedal" } });
+  const pedal = (await bill(u)).items.find((i) => i.note === "pedal");
+  const up = async () => (await J(await upload(u))).id;
+  const approve = (id, body, as = t.admin) => t.fetch(`/api/admin/receipts/${id}/approve`, { method: "POST", as, body: { charges: String(pedal.id), ...body } });
+
+  const id = await up();
+  assert.equal((await approve(id, { amount_try: 100, credit_try: 100 }, u)).status, 403); // member
+  assert.equal((await approve(id, { amount_try: 100, credit_try: 400 })).status, 400); // > credit balance (300)
+  assert.equal((await approve(id, { amount_try: 0, credit_try: 0 })).status, 400);
+  assert.equal((await approve(id, { amount_try: 100, credit_try: -1 })).status, 400);
+  assert.equal((await approve(id, { amount_try: 100, credit_try: 1.5 })).status, 400);
+  assert.equal((await bill(u)).credit.balance_try, 300); // nothing leaked
+  const ok = await J(await approve(id, { amount_try: 400, credit_try: 100 })); // 300 selected: 100 credit + 400 cash -> 100 surplus
+  assert.equal(ok.status, "ok");
+  assert.deepEqual([ok.applied_try, ok.credit_try, ok.cash_try, ok.overpaid_try, ok.paid_try], [300, 100, 400, 200, 500]);
+  assert.equal((await bill(u)).credit.balance_try, 400); // -100 used, +200 surplus
+  // undo + redo of the mixed receipt: same credit math (the old code wrote overpaid_try = -applied only for negatives)
+  await admin(`/receipts/${id}/reject`, { method: "POST", body: {} });
+  assert.equal((await bill(u)).credit.balance_try, 300);
+  const redo = await J(await admin(`/receipts/${id}/approve`, { method: "POST", body: {} }));
+  assert.deepEqual([redo.status, redo.credit_try, redo.overpaid_try], ["ok", 100, 200]);
+  assert.equal((await bill(u)).credit.balance_try, 400);
+  // pure credit on a pending upload (cash 0), then redo after the credit was settled in cash = 409
+  await admin(`/users/${u.id}/charges`, { method: "POST", body: { month: M, amount_try: 200, note: "kablo" } });
+  const kablo = (await bill(u)).items.find((i) => i.note === "kablo");
+  const id2 = await up();
+  const pure = await J(await t.fetch(`/api/admin/receipts/${id2}/approve`, { method: "POST", as: t.admin, body: { charges: String(kablo.id), amount_try: 0, credit_try: 200 } }));
+  assert.deepEqual([pure.status, pure.credit_try, pure.cash_try], ["ok", 200, 0]);
+  assert.equal((await bill(u)).credit.balance_try, 200);
+  await admin(`/receipts/${id2}/reject`, { method: "POST", body: {} });
+  await admin(`/users/${u.id}/credit/settle`, { method: "POST", body: {} }); // pays all 400 back
+  assert.equal((await bill(u)).credit.balance_try, 0);
+  assert.equal((await admin(`/receipts/${id2}/approve`, { method: "POST", body: {} })).status, 409); // not enough credit left
 });

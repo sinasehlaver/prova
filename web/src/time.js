@@ -1,5 +1,7 @@
 // Client-side Istanbul time (fixed UTC+3, mirrors server/lib/tz.mjs). All instants are UTC ms.
 export const H = 3600_000;
+/** Members edit/cancel own bookings only until 1 h before start. Mirrors EDIT_CUTOFF_MS in server/lib/reservations.mjs. */
+export const EDIT_CUTOFF_MS = H;
 export const D = 24 * H;
 const OFF = 3 * H;
 const f = (o) => new Intl.DateTimeFormat("tr-TR", { timeZone: "Europe/Istanbul", ...o });

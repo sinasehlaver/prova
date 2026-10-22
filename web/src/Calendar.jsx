@@ -5,7 +5,7 @@ import { ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "./icons.jsx";
 import Sheet from "./Sheet.jsx";
 import { DatePicker, GridPick, Select } from "./Controls.jsx";
 import { ErrorState, Skeleton } from "./States.jsx";
-import { D, H, dayStart, fmtDay, fmtLong, fmtTime, fmtWd, hourLabel, weekStart } from "./time.js";
+import { D, EDIT_CUTOFF_MS, H, dayStart, fmtDay, fmtLong, fmtTime, fmtWd, hourLabel, weekStart } from "./time.js";
 
 // ponytail: fixed 08:00-24:00 window in the UI (API accepts any whole hour). Make it a setting if a room runs earlier.
 const FROM = 8, TO = 22; // no booking ends after 22:00 (noise)
@@ -214,7 +214,7 @@ export function NewSheet({ day: day0, hour, hours: initialHours, res: parentRes,
   const [h0, setH0] = useState(hour);
   const [hours, setHours] = useState(Number.isInteger(initialHours) && initialHours >= 1 ? initialHours : 1);
   const [note, setNote] = useState(edit?.note ?? "");
-  const [people, setPeople] = useState(edit?.people ?? 1);
+  const [people, setPeople] = useState(edit?.people ?? 0);
   const [err, setErr] = useState("");
   const [holdErr, setHoldErr] = useState(""); // someone else got these hours first (409 on the hold)
   const [busy, setBusy] = useState(false);
@@ -281,8 +281,8 @@ export function NewSheet({ day: day0, hour, hours: initialHours, res: parentRes,
           <div className="field" role="group" aria-label={tr.cal.people}>
             <span>{tr.cal.people}</span>
             <div className="seg stepper">
-              <button type="button" aria-label={tr.cal.fewer} disabled={people <= 1} onClick={() => setPeople(people - 1)}>−</button>
-              <output className="num" aria-live="polite">{people}</output>
+              <button type="button" aria-label={tr.cal.fewer} disabled={people <= 0} onClick={() => setPeople(people - 1)}>−</button>
+              <output className="num" aria-live="polite">+{people}</output>
               <button type="button" aria-label={tr.cal.more} disabled={people >= maxPeople} onClick={() => setPeople(people + 1)}>+</button>
             </div>
             <span className="muted small">{tr.cal.peopleHint}</span>
@@ -312,7 +312,8 @@ function ViewSheet({ r, now, me, onClose, onDone }) {
   const [err, setErr] = useState("");
   const own = r.booker_id === me.id;
   const past = r.start_ms <= now;
-  const can = me.role === "admin" || (!past && own);
+  const locked = own && me.role !== "admin" && !past && r.start_ms - EDIT_CUTOFF_MS < now;
+  const can = me.role === "admin" || (!past && own && !locked);
   const first = r.booker_name.trim().split(/\s+/)[0];
   const armed = fold(typed) === fold(r.booker_name) && reason.trim().length >= MIN_REASON;
   const cancel = async () => {
@@ -348,6 +349,7 @@ function ViewSheet({ r, now, me, onClose, onDone }) {
           </div>
         </form>
       )}
+      {locked && <p className="muted small">{tr.cal.locked}</p>}
       {can && !(danger && !own) && (
         <div className="row end wrap sheet-actions">
           {!own ? <button className="btn danger" onClick={() => setDanger(true)}>{tr.cal.adminCancel}</button>
