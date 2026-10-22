@@ -199,6 +199,11 @@ function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, o
   if (!items) return <li>{err ? <ErrorState message={err} onRetry={load} /> : <Skeleton rows={2} />}</li>;
   return (
     <li>
+      <div className="rcpt-banner" role="status">
+        <UploadG />
+        <div><b>{tr.admin.memberUploaded}</b>
+          <div className="small">{r.user_name} · {fmtDateTimeShort(r.uploaded_at)} ({tr.admin.uploadedAgo(Math.max(0, Math.round((Date.now() - new Date(r.uploaded_at).getTime()) / 60000)))}){(r.paid_try ?? r.expected_try) != null && <> · {fmtTRY(r.paid_try ?? r.expected_try)}</>}</div></div>
+      </div>
       {r.member_note && <p className="rcpt-msg"><b>{tr.admin.memberNote}:</b> {r.member_note}</p>}
       <PaymentComposer items={items} elsewhere={elsewhere} receipt={r} head={head} say={say}
         credit={fetched?.credit?.balance_try ?? 0}
@@ -246,6 +251,7 @@ function ReceiptCard({ r, onReview, onDelete, showUser = true, items, elsewhere,
       {ok && <PaySummary saved count={picked.length} sum={r.expected_try} paid={r.cash_try ?? r.paid_try} credit={r.credit_try ?? 0} spill={r.spill_try} owed={r.overpaid_try} />}
       {adminNote && <p className="rcpt-msg">{adminNote}</p>}
       {r.has_pdf && <PdfToggle src={`/api/receipts/${r.id}/pdf`} title={r.filename} />}
+      {ok && r.has_pdf && onReview && <div className="row end"><button type="button" className="btn" onClick={() => onReview(r, "undo-approval")}>{A.undo}</button></div>}
       {onDelete && <div className="row end"><DeleteReceipt paid={ok} onDelete={() => onDelete(r)} /></div>}
       </div>
     </li>
@@ -340,9 +346,15 @@ export function Payments({ onDetail }) {
       const upd = await api("POST", `/admin/receipts/${r.id}/${action}`, { note, ...extra });
       setList((l) => (upd?.status === "mismatch" ? l.filter((x) => x.id !== r.id) : l.map((x) => (x.id === r.id ? upd : x)))); // rejected member uploads leave the admin list
       loadOv();
-      say(action === "approve" ? A.approved : A.rejected);
+      say(action === "approve" ? A.approved : action === "undo-approval" ? A.undone : A.rejected);
     } catch (e) { say(e.message || tr.err.generic); return false; }
   };
+  const groups = [];
+  for (const r of list || []) if (r.status === "pending") {
+    let g = groups.find((x) => x.user_id === r.user_id);
+    if (!g) groups.push(g = { user_id: r.user_id, name: r.user_name, rows: [] });
+    g.rows.push(r);
+  }
   return (
     <section>
       <div className="page-head"><h2>{O.title}</h2></div>
@@ -362,7 +374,12 @@ export function Payments({ onDetail }) {
       <label className="check"><input type="checkbox" checked={allMonths} onChange={(e) => setAllMonths(e.target.checked)} /><span>{A.allMonths}</span></label>
       {!list && (loadErr ? <ErrorState message={loadErr} onRetry={load} /> : <Skeleton rows={3} />)}
       {list && !list.length && <EmptyState title={tr.empty.receipts[0]} body={tr.empty.receipts[1]} />}
-      <ul className="list">{(list || []).map((r) => <ReceiptCard key={r.id} r={r} onReview={review} onDelete={del} say={say} />)}</ul>
+      {groups.map((g) => (
+        <Collapse key={"u" + g.user_id} defaultOpen={false} title={<span>{g.name}<span className="muted small"> · {A.newReceipts(g.rows.length)}</span></span>}>
+          <ul className="list">{g.rows.map((r) => <ReceiptCard key={r.id} r={r} showUser={false} onReview={review} onDelete={del} say={say} />)}</ul>
+        </Collapse>
+      ))}
+      <ul className="list">{(list || []).filter((r) => r.status !== "pending").map((r) => <ReceiptCard key={r.id} r={r} onReview={review} onDelete={del} say={say} />)}</ul>
       {toast}
     </section>
   );
@@ -452,7 +469,7 @@ export function UserDetail({ user, onBack, backLabel }) {
     catch (e) { say(e.message || tr.err.generic); }
   };
   const review = async (r, action, note, extra) => {
-    try { await api("POST", `/admin/receipts/${r.id}/${action}`, { note, ...extra }); say(action === "approve" ? A.approved : A.rejected); await load(data.month); }
+    try { await api("POST", `/admin/receipts/${r.id}/${action}`, { note, ...extra }); say(action === "approve" ? A.approved : action === "undo-approval" ? A.undone : A.rejected); await load(data.month); }
     catch (e) { say(e.message); return false; }
   };
   const [settle, setSettle] = useState({ amount: "", note: "" });
@@ -482,7 +499,9 @@ export function UserDetail({ user, onBack, backLabel }) {
         <>
           <MonthNav month={data.month} months={data.months} onChange={load} />
           <KalanCard data={data} />
-          <DebtCard data={data} onPick={load} admin />
+          {data.debt_try > 0 && (data.debt_months ?? []).some((m) => m.month !== data.month) && (
+            <Collapse title={tr.billing.debt.titleAdmin} defaultOpen={false}><DebtCard data={data} onPick={load} admin /></Collapse>
+          )}
           <CreditCover cover={data.credit_cover} admin />
           {data.credit.balance_try > 0 && (
             <CreditCard credit={data.credit} admin>
@@ -499,9 +518,11 @@ export function UserDetail({ user, onBack, backLabel }) {
             </ul>
           )}
           {/* read-only item list (waive/unwaive only) - WHAT a payment covers is picked inside the payment form below */}
+          <Collapse title={A.waive} defaultOpen={false}>
           <ItemList items={data.items} empty={data.future ? tr.billing.futureEmptyAdmin : undefined} extra={(it) =>
             it.status === "unpaid" ? <button className="btn sm ghost" onClick={() => waive(it, true)}>{A.waive}</button>
               : it.status === "waived" ? <button className="btn sm ghost" onClick={() => waive(it, false)}>{A.unwaive}</button> : null} />
+          </Collapse>
           {/* order matters (user request 2026-09-23): add an extra charge first, then record the payment that covers it */}
           <form className="card form adj-form" onSubmit={addAdj}>
             <h3>{A.adjust}</h3>
@@ -511,7 +532,7 @@ export function UserDetail({ user, onBack, backLabel }) {
             </div>
             <div className="row end"><button className="btn primary" disabled={!adj.amount || !adj.label.trim()}>{A.adjustAdd}</button></div>
           </form>
-          <Collapse title={P.title}>
+          <Collapse title={P.title} defaultOpen={false}>
             <RecordPayment userId={user.id} month={data.month} items={data.items} elsewhere={data.other_open} credit={data.credit.balance_try} say={say} onSaved={() => load(data.month)} />
           </Collapse>
           <Collapse title={A.payments}>

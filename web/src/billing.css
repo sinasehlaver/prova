@@ -303,3 +303,9 @@ a.link:hover { text-decoration: underline; filter: brightness(1.1); }
 .bill-start-label { font-weight: 600; font-size: var(--fs-2); }
 .bill-start .hint { max-width: 60ch; }
 .fold-toggle .mr-chev { width: 1.1rem; height: 1.1rem; flex: none; transition: transform 160ms cubic-bezier(.22,.61,.36,1); }
+
+/* admin: pending member upload banner ("Üye dekont yükledi") */
+.rcpt-banner { display: flex; align-items: center; gap: var(--s-3); padding: var(--s-3); margin-bottom: var(--s-2); border-radius: var(--r-2, 10px); background: var(--accent-tint); color: var(--accent); border-left: 4px solid var(--accent); }
+.rcpt-banner > svg { width: 22px; height: 22px; flex: none; }
+.rcpt-banner b { font-size: var(--fs-3, 1rem); }
+.rcpt-banner .small { color: var(--text, inherit); opacity: .8; }

@@ -9,6 +9,7 @@ import MyReservations from "./MyReservations.jsx";
 import Calendar from "./Calendar.jsx";
 import Alerts, { AlertBadges } from "./Alerts.jsx";
 import useReceiptCount from "./useReceiptCount.js";
+import { useRequestCount } from "./DeletionRequests.jsx";
 import AlertKinds from "./AlertKinds.jsx";
 import Profile from "./Profile.jsx";
 import { Boot, ErrorState, Skeleton } from "./States.jsx";
@@ -246,6 +247,7 @@ function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
   const active = tabs.find((t) => t.id === tab) ? tab : "calendar";
   const pendingCount = usePendingCount(me.role === "admin");
   const receiptCount = useReceiptCount(me.role === "admin");
+  const requestCount = useRequestCount(me.role === "admin");
   // the URL hash always names the tab that is actually rendered (no #admin for a non-admin)
   useEffect(() => { if (tabOf() !== active) go(active, { replace: true }); }, [active]);
 
@@ -265,7 +267,7 @@ function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
         </button>
       </header>
       <main className="page" key={`${me.id}:${me.role}`}>
-        {active === "admin" ? <AdminGate me={me} recheck={recheck}><Admin me={me} extra={<AlertKinds />} pendingCount={pendingCount} receiptCount={receiptCount} /></AdminGate> : active === "payments" ? <Billing /> : active === "alerts" ? <Alerts /> : active === "myRes" ? <MyReservations /> : active === "calendar" ? <Calendar me={me} /> : <Placeholder id={active} />}
+        {active === "admin" ? <AdminGate me={me} recheck={recheck}><Admin me={me} extra={<AlertKinds />} pendingCount={pendingCount} receiptCount={receiptCount} requestCount={requestCount} /></AdminGate> : active === "payments" ? <Billing /> : active === "alerts" ? <Alerts /> : active === "myRes" ? <MyReservations /> : active === "calendar" ? <Calendar me={me} /> : <Placeholder id={active} />}
       </main>
       <nav className="tabbar" aria-label="Ana menü">
         {tabs.map(({ id, Icon }) => (
@@ -275,8 +277,8 @@ function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
               {id === "admin" && pendingCount > 0 && (
                 <span className="count-badge" data-count={pendingCount > 99 ? "99+" : pendingCount} role="status" aria-label={tr.members.pendingCount(pendingCount)} />
               )}
-              {id === "admin" && pendingCount === 0 && receiptCount > 0 && (
-                <span className="count-badge is-accent" data-count={receiptCount > 99 ? "99+" : receiptCount} role="status" aria-label={tr.members.pendingReceipts(receiptCount)} />
+              {id === "admin" && pendingCount === 0 && receiptCount + requestCount > 0 && (
+                <span className="count-badge is-accent" data-count={receiptCount + requestCount > 99 ? "99+" : receiptCount + requestCount} role="status" aria-label={tr.delReq.pending(receiptCount + requestCount)} />
               )}
             </span>
             <span>{tr.tabs[id]}</span>

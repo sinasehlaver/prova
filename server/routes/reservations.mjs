@@ -2,6 +2,7 @@ import { Router } from "express";
 import { COVERED_SQL } from "../lib/billing.mjs";
 import { BOOTSTRAP_ID_SQL, OBSERVER_NAME, isBootstrap, requireAdmin, requireAuth } from "../lib/auth.mjs";
 import { EARLIEST_DATE, EARLIEST_MS, monthOf } from "../lib/tz.mjs";
+import { createDeletionRequest, listPendingRequests, resolveRequest } from "../lib/deletion-requests.mjs";
 import { listHolds, releaseHold, setHold } from "../lib/holds.mjs";
 import { LISTENER_NO_BOOKING, MAX_PEOPLE, OBSERVER_NO_BOOKING, cancelReservation, createReservation, listReservations, updateReservation } from "../lib/reservations.mjs";
 
@@ -9,7 +10,7 @@ const DAY = 86_400_000;
 
 export default ({ db }) => {
   const r = Router();
-  r.use(["/reservations", "/members", "/holds"], requireAuth);
+  r.use(["/reservations", "/members", "/holds", "/deletion-requests"], requireAuth);
   // domain errors carry .status; anything else -> global 500 handler
   const guard = (fn) => async (req, res, next) => {
     try { await fn(req, res); } catch (e) { e.status ? res.status(e.status).json({ error: e.message }) : next(e); }
@@ -38,7 +39,8 @@ export default ({ db }) => {
   r.get("/reservations/mine", guard(async (req, res) => {
     const { rows } = await db.execute({
       sql: `SELECT r.id, r.start_ms, r.end_ms, r.note, r.people, r.cancelled_at, c.amount_try AS charge_try,
-              c.voided_at, c.waived_at, c.paid_receipt_id, ${COVERED_SQL} AS covered
+              c.voided_at, c.waived_at, c.paid_receipt_id, ${COVERED_SQL} AS covered,
+              (SELECT d.status FROM deletion_requests d WHERE d.reservation_id = r.id ORDER BY d.id DESC LIMIT 1) AS del_req
             FROM reservations r LEFT JOIN charges c ON c.reservation_id = r.id AND c.kind = 'booking'
             WHERE r.booker_id = ? ORDER BY r.start_ms DESC LIMIT 200`,
       args: [req.user.id],
@@ -72,6 +74,20 @@ export default ({ db }) => {
     await cancelReservation(db, Number(req.params.id), req.user, { reason: b.reason, confirm: b.confirm });
     res.json({ ok: true });
   }));
+
+  // Past-reservation deletion requests: member asks, admins approve (= cancelReservation as admin) or reject.
+  r.post("/reservations/:id/deletion-request", guard(async (req, res) => {
+    const id = await createDeletionRequest(db, req.user, Number(req.params.id), req.body?.reason);
+    res.status(201).json({ id });
+  }));
+  r.get("/deletion-requests", requireAdmin, guard(async (_req, res) => res.json(await listPendingRequests(db))));
+  r.get("/deletion-requests/count", requireAdmin, guard(async (_req, res) => res.json({ count: (await listPendingRequests(db)).length })));
+  for (const [verb, approve] of [["approve", true], ["reject", false]]) {
+    r.post(`/deletion-requests/:id/${verb}`, requireAdmin, guard(async (req, res) => {
+      await resolveRequest(db, req.user, Number(req.params.id), approve);
+      res.json({ ok: true });
+    }));
+  }
 
   // Soft holds ("X is choosing these hours"): UX layer above the DB overlap check. One live hold per user, ~2 min TTL.
   r.get("/holds", guard(async (req, res) => res.json(await listHolds(db, req.user.id))));

@@ -157,7 +157,7 @@ test("every admin route: anonymous 401, member 403 (admin area is strongly guard
     ["GET", "/api/users"], ["POST", "/api/users"], ["PATCH", "/api/users/1"], ["POST", "/api/users/1/regenerate-invite"],
     ["POST", "/api/users/1/approve"], ["POST", "/api/users/1/reject"],
     ["GET", "/api/admin/billing/overview"],
-    ["GET", "/api/admin/receipts"], ["POST", "/api/admin/receipts/1/approve"], ["POST", "/api/admin/receipts/1/reject"],
+    ["GET", "/api/admin/receipts"], ["POST", "/api/admin/receipts/1/approve"], ["POST", "/api/admin/receipts/1/reject"], ["POST", "/api/admin/receipts/1/undo-approval"],
     ["POST", "/api/admin/receipts/parse"],
     ["GET", "/api/admin/users/1/billing"], ["GET", "/api/admin/users/1/receipts"], ["POST", "/api/admin/users/1/receipts"],
     ["GET", "/api/admin/users/1/reservations"],
@@ -203,6 +203,9 @@ test("PATCH /api/me accent: own choice only, allowlisted, default brick, other u
     assert.equal((await t.fetch("/api/me", { method: "PATCH", as: u, body: { name: "Renk Test", accent: bad } })).status, 400, JSON.stringify(bad));
   const kept = await (await t.fetch("/api/me", { method: "PATCH", as: u, body: { name: "Renk Test" } })).json(); // omitted = unchanged
   assert.equal(kept.accent, "blue");
+  assert.equal((await t.fetch("/api/me", { method: "PATCH", as: u, body: { name: "Renk Test", accent: "gray" } })).status, 400); // gray removed
+  await t.db.execute({ sql: "UPDATE users SET accent = 'gray' WHERE id = ?", args: [u.id] }); // legacy row
+  assert.equal((await t.fetch("/api/me", { as: u }).then((r) => r.json())).accent, "brick");
   assert.equal((await t.fetch("/api/me", { as: t.member }).then((r) => r.json())).accent, "brick");
 });
 

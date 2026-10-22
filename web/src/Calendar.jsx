@@ -303,7 +303,7 @@ export function NewSheet({ day: day0, hour, hours: initialHours, res: parentRes,
 const fold = (s) => String(s ?? "").trim().split(/\s+/)[0].toLocaleLowerCase("tr").replace(/ı/g, "i").normalize("NFD").replace(/[̀-ͯ]/g, "");
 const MIN_REASON = 5;
 
-function ViewSheet({ r, now, me, onClose, onDone }) {
+function ViewSheet({ r, now, me, onClose, onDone, onEdit }) {
   const [sure, setSure] = useState(false);
   const [danger, setDanger] = useState(false); // admin acting on someone else's booking: hard gate
   const [typed, setTyped] = useState("");
@@ -314,6 +314,7 @@ function ViewSheet({ r, now, me, onClose, onDone }) {
   const past = r.start_ms <= now;
   const locked = own && me.role !== "admin" && !past && r.start_ms - EDIT_CUTOFF_MS < now;
   const can = me.role === "admin" || (!past && own && !locked);
+  const canEdit = own && !past && !locked; // server: booker only, cutoff for non-admins; overlap/curfew/hold checks stay server-side
   const first = r.booker_name.trim().split(/\s+/)[0];
   const armed = fold(typed) === fold(r.booker_name) && reason.trim().length >= MIN_REASON;
   const cancel = async () => {
@@ -352,6 +353,7 @@ function ViewSheet({ r, now, me, onClose, onDone }) {
       {locked && <p className="muted small">{tr.cal.locked}</p>}
       {can && !(danger && !own) && (
         <div className="row end wrap sheet-actions">
+          {canEdit && !sure && <button className="btn" onClick={onEdit}>{tr.cal.edit}</button>}
           {!own ? <button className="btn danger" onClick={() => setDanger(true)}>{tr.cal.adminCancel}</button>
           : !sure ? <button className="btn danger" onClick={() => setSure(true)}>{tr.cal.cancelBooking}</button> : (
             <>
@@ -490,7 +492,13 @@ export default function Calendar({ me }) {
           minDay={from} maxDay={last} covers={(d) => d >= loadFrom && d < loadTo}
           onClose={() => setSheet(null)} onDone={done} />
       )}
-      {sheet?.kind === "view" && <ViewSheet r={sheet.r} now={now} me={me} onClose={() => setSheet(null)} onDone={done} />}
+      {sheet?.kind === "edit" && (
+        <NewSheet edit={sheet.r} day={dayStart(sheet.r.start_ms)} hour={Math.round((sheet.r.start_ms - dayStart(sheet.r.start_ms)) / H)}
+          hours={Math.round((sheet.r.end_ms - sheet.r.start_ms) / H)} res={res || []} holds={liveHolds} now={now} maxPeople={maxPeople}
+          minDay={from} maxDay={last} covers={(d) => d >= loadFrom && d < loadTo}
+          onClose={() => setSheet(null)} onDone={done} />
+      )}
+      {sheet?.kind === "view" && <ViewSheet r={sheet.r} now={now} me={me} onClose={() => setSheet(null)} onDone={done} onEdit={() => setSheet({ kind: "edit", r: sheet.r })} />}
       <div className={"toast" + (toast ? " show" : "")} role="status">{toast}</div>
     </section>
   );

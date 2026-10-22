@@ -4,7 +4,7 @@ import { tr } from "./tr.js";
 import Sheet from "./Sheet.jsx";
 import "./profile.css";
 
-const ACCENTS = ["brick", "blue", "green", "purple", "pink", "yellow", "gray"];
+const ACCENTS = ["brick", "blue", "green", "purple", "pink", "yellow"];
 
 const monthLabel = (ym) => {
   const [y, m] = String(ym || "").split("-");

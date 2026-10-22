@@ -467,6 +467,38 @@ export const deleteReceipt = (db, id, { userId = null } = {}) => serial(async ()
 });
 
 /**
+ * Admin: take back an APPROVAL. An 'ok' receipt that has a PDF (a member upload, or any row that was once pending) goes back
+ * to 'pending' as if just uploaded: allocation rows, applied/overpaid/credit and expected are cleared, so the items it paid
+ * are open again, a "Alacağı hesaba kat" credit is given back and a surplus it created disappears (credit is derived from ok
+ * receipts only). Charges another receipt had "completed" thanks to it are re-checked against coverage. Receipts without a
+ * PDF (admin-recorded payments) have nothing to review again: 409, delete them instead.
+ */
+export const undoApproval = (db, id) => serial(async () => {
+  const r = (await db.execute({ sql: "SELECT id, status, pdf IS NOT NULL AS has_pdf FROM receipts WHERE id = ?", args: [id] })).rows[0];
+  if (!r) throw fail(404, "Dekont bulunamadı");
+  if (r.status !== "ok") throw fail(409, "Dekont onaylı değil");
+  if (!r.has_pdf) throw fail(409, "Yöneticinin kaydettiği ödeme geri alınamaz; sil");
+  const tx = await db.transaction("write");
+  try {
+    const own = (await tx.execute({ sql: "SELECT charge_id FROM receipt_charges WHERE receipt_id = ?", args: [id] })).rows.map((x) => x.charge_id);
+    await tx.execute({ sql: "UPDATE charges SET paid_receipt_id = NULL, paid_by = NULL WHERE paid_receipt_id = ?", args: [id] });
+    await tx.execute({ sql: "DELETE FROM receipt_charges WHERE receipt_id = ?", args: [id] });
+    await tx.execute({ sql: "UPDATE receipts SET status = 'pending', expected_try = NULL, applied_try = 0, overpaid_try = 0, credit_try = 0, admin_note = NULL WHERE id = ?", args: [id] });
+    for (const cid of own) {
+      const c = (await tx.execute({ sql: `SELECT c.id, c.amount_try, c.paid_receipt_id, ${COVERED_SQL} AS covered FROM charges c WHERE c.id = ?`, args: [cid] })).rows[0];
+      if (c && c.paid_receipt_id != null && Number(c.covered) < c.amount_try) await tx.execute({ sql: "UPDATE charges SET paid_receipt_id = NULL, paid_by = NULL WHERE id = ?", args: [cid] });
+    }
+    await repriceOpenSubscriptions(tx, own);
+    await tx.commit();
+  } catch (e) {
+    await tx.rollback().catch(() => {});
+    throw e;
+  } finally {
+    tx.close();
+  }
+});
+
+/**
  * Member edits a REJECTED own upload and sends it back for review: replaces the PDF (optional) and/or adds a message,
  * flips mismatch -> pending and clears the admin's reason. Own receipt only (404); not mismatch (409); admin-recorded or
  * once-allocated legacy rows (409).

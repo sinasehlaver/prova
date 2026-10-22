@@ -44,7 +44,6 @@
 .swatch[data-accent="purple"] { --a-d: #a78bfa; --a-l: #6d28d9; }
 .swatch[data-accent="pink"]   { --a-d: #f472b6; --a-l: #be185d; }
 .swatch[data-accent="yellow"] { --a-d: #f0c43e; --a-l: #a16207; }
-.swatch[data-accent="gray"]   { --a-d: #a1a1aa; --a-l: #52525b; }
 .swatch:hover { transform: scale(1.08); }
 .swatch:active { transform: scale(0.95); }
 .swatch:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--surface), var(--ring); }

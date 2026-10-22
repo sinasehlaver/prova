@@ -3,7 +3,7 @@ import { clearSessionCookie, isBootstrap, newToken, requireAuth, requireSession,
 import { currentMonth } from "../lib/tz.mjs";
 import { clear, isLimited, record } from "../lib/ratelimit.mjs";
 
-export const ACCENTS = ["brick", "blue", "green", "purple", "pink", "yellow", "gray"];
+export const ACCENTS = ["brick", "blue", "green", "purple", "pink", "yellow"];
 export const publicUser = ({ id, name, phone, role, active, status, joined_month, email, accent }) => ({ id, name, phone, role, active: !!active, status: status ?? "approved", joined_month, email, accent: ACCENTS.includes(accent) ? accent : "brick" });
 
 const SIGNUP_WINDOW = 10 * 60_000, SIGNUP_PER_IP = 5, MAX_PENDING = 50;

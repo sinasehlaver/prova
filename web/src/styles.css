@@ -59,7 +59,6 @@
 :root[data-accent="purple"] { --a-d: #a78bfa; --a-di: #120b2b; --a-l: #6d28d9; }
 :root[data-accent="pink"]   { --a-d: #f472b6; --a-di: #2b0716; --a-l: #be185d; }
 :root[data-accent="yellow"] { --a-d: #f0c43e; --a-di: #231a02; --a-l: #a16207; }
-:root[data-accent="gray"]   { --a-d: #a1a1aa; --a-di: #121214; --a-l: #52525b; }
 
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; margin: 0; }

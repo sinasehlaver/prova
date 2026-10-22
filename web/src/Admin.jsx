@@ -5,12 +5,13 @@ import { hashParts, go, closeDetail } from "./nav.js";
 import { tr } from "./tr.js";
 import Members from "./Members.jsx";
 import Economics from "./Economics.jsx";
+import DeletionRequests from "./DeletionRequests.jsx";
 import { Fees, PaySettings, Payments, UserDetail } from "./AdminBilling.jsx";
 
-const SECTIONS = ["members", "receipts", "fees", "economics", "settings"];
+const SECTIONS = ["members", "requests", "receipts", "fees", "economics", "settings"];
 
 /** Admin area: section tabs. `extra` renders under Members (other admin blocks, e.g. alert kinds). */
-export default function Admin({ me, extra, pendingCount = 0, receiptCount = 0 }) {
+export default function Admin({ me, extra, pendingCount = 0, receiptCount = 0, requestCount = 0 }) {
   // route lives in the URL hash: #admin/<section>[/user/<id>]
   const read = () => { const p = hashParts(); return { section: SECTIONS.includes(p[1]) ? p[1] : "members", id: p[0] === "admin" && p[2] === "user" && /^\d+$/.test(p[3] || "") ? Number(p[3]) : null }; };
   const [route, setRoute] = useState(read);
@@ -42,6 +43,9 @@ export default function Admin({ me, extra, pendingCount = 0, receiptCount = 0 })
             {s === "receipts" && receiptCount > 0 && (
               <span className="count-badge is-accent" data-count={receiptCount > 99 ? "99+" : receiptCount} role="status" aria-label={tr.members.pendingReceipts(receiptCount)} />
             )}
+            {s === "requests" && requestCount > 0 && (
+              <span className="count-badge is-accent" data-count={requestCount > 99 ? "99+" : requestCount} role="status" aria-label={tr.delReq.pending(requestCount)} />
+            )}
             {s === "members" && pendingCount > 0 && (
               <span className="count-badge" data-count={pendingCount > 99 ? "99+" : pendingCount} role="status" aria-label={tr.members.pendingCount(pendingCount)} />
             )}
@@ -51,6 +55,7 @@ export default function Admin({ me, extra, pendingCount = 0, receiptCount = 0 })
       {section === "members" && (id != null ? detailView() : <><Members me={me} onDetail={open} />{extra}</>)}
       {/* Ödemeler: everyone + their outstanding by default; a row opens the same per-user drill-down as Üyeler. */}
       {section === "receipts" && (id != null ? detailView(tr.admin.backPayments) : <Payments onDetail={open} />)}
+      {section === "requests" && <DeletionRequests />}
       {section === "fees" && <Fees />}
       {section === "economics" && <Economics />}
       {section === "settings" && <PaySettings />}

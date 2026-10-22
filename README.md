@@ -112,10 +112,11 @@ Go to the **Takvim** (Calendar) tab.
   members' bookings too, but only after typing the booker's name and a reason
   — that gets logged. Only admins can also cancel **past** (already started)
   bookings, with the same name + reason check; unpaid charges are voided, paid
-  ones stay.
+  ones stay. For a past booking you can instead ask an admin to delete it
+  (**Silinmesini iste**, optional reason); the admin approves or rejects it.
 - **Rezervasyonlarım** (My reservations) lists your own bookings grouped by
   month (newest first, collapsed by default), with paid/unpaid totals per month
-  and overall. You can edit or cancel a booking from there until 1 hour before it starts (the buttons disappear after that).
+  and overall. You can edit or cancel a booking from there until 1 hour before it starts (the buttons disappear after that). The calendar's booking view has **Düzenle** for the same case.
 
 ### Paying your dues
 
@@ -175,9 +176,13 @@ Everything above, plus, under **Yönetim** (Admin):
   "Kaydedildi" card: covered items, their total, the paid amount, the result,
   and the PDF if there is one. Member-uploaded dekonts show up as the same
   kind of draft ("Onay bekliyor") — pick the items + amount and approve, or
-  reject with a reason. A member's **Faturalama başlangıcı** (billing start, on
+  reject with a reason. An approved dekont that turns out wrong can be put back
+  with **Geri al** (it returns to pending and its effects on the balance are reverted)
+  — only when it has a PDF; cash payments are deleted instead. A member's **Faturalama başlangıcı** (billing start, on
   their page) sets the first billed month; moving it earlier adds the missed months
   as debt, moving it later leaves existing charges alone.
+- **İstekler** — deletion requests for past bookings, approve (the booking is
+  cancelled and its unpaid charges voided) or reject. The count shows on the Yönetim tab.
 - **Ücretler** — set the monthly dues and per-person booking fee for any month
   from January 2025 on (edit a month from its **Düzenle** button). A change
   re-prices that month's unpaid charges only; paid, partly paid and waived

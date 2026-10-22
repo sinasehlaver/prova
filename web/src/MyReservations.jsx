@@ -4,6 +4,7 @@ import { tr } from "./tr.js";
 import { fmtTRY } from "./Billing.jsx";
 import { NewSheet } from "./Calendar.jsx";
 import { ChevronRightIcon } from "./icons.jsx";
+import Sheet from "./Sheet.jsx";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
 import { D, EDIT_CUTOFF_MS, H, dayStart } from "./time.js";
 
@@ -35,6 +36,12 @@ export default function MyReservations() {
   const [open, setOpen] = useState(() => new Set());
   const [edit, setEdit] = useState(null); // { r, maxPeople, minDay, holds }
   const [toast, setToast] = useState("");
+  const [ask, setAsk] = useState(null); // { r, reason } past-reservation deletion request
+  const sendAsk = async () => {
+    setBusy(true);
+    try { await api("POST", `/reservations/${ask.r.id}/deletion-request`, { reason: ask.reason }); setAsk(null); setToast(T.delSent); setTimeout(() => setToast(""), 2500); await load(); }
+    catch (e) { setErr(e.message || tr.err.generic); setAsk(null); load(); } finally { setBusy(false); }
+  };
   const load = useCallback(() => api("GET", "/reservations/mine").then((r) => { setRows(r); setErr(""); }, (e) => setErr(e.message || tr.err.generic)), []);
   useEffect(() => { load(); }, [load]);
 
@@ -73,6 +80,9 @@ export default function MyReservations() {
           ) : (
             <> <button className="btn sm" onClick={() => startEdit(r)}>{T.edit}</button> <button className="btn sm danger" onClick={() => setSure(r.id)}>{tr.cal.cancelBooking}</button></>
           ))}
+          {!r.cancelled_at && r.start_ms <= now && (r.del_req === "pending"
+            ? <> <span className="pill warn">{T.delPending}</span></>
+            : <> {r.del_req === "rejected" && <span className="muted small">{T.delRejected} </span>}<button className="btn sm" onClick={() => setAsk({ r, reason: "" })}>{T.delAsk}</button></>)}
           {locked && <> <span className="muted small">{tr.cal.locked}</span></>}
         </span>
         <span className="num">{fmtTRY(r.charge_try ?? 0)}</span>
@@ -99,6 +109,16 @@ export default function MyReservations() {
         <NewSheet edit={edit.r} day={dayStart(edit.r.start_ms)} hour={Math.round((edit.r.start_ms - dayStart(edit.r.start_ms)) / H)}
           hours={Math.round((edit.r.end_ms - edit.r.start_ms) / H)} res={[]} holds={edit.holds} now={now} maxPeople={edit.maxPeople}
           minDay={edit.minDay} maxDay={dayStart(now + 365 * D)} covers={() => false} onClose={() => setEdit(null)} onDone={done} />
+      )}
+      {ask && (
+        <Sheet title={T.delTitle} onClose={() => setAsk(null)}>
+          <p className="muted">{T.delHint}</p>
+          <p><b>{fmt(ask.r.start_ms)}–{hh(ask.r.end_ms)}</b></p>
+          <label className="field"><span>{T.delReason}</span>
+            <textarea data-autofocus rows={3} maxLength={300} value={ask.reason} onChange={(e) => setAsk({ ...ask, reason: e.target.value })} />
+          </label>
+          <div className="actions"><button className="btn" onClick={() => setAsk(null)}>{tr.cal.cancel}</button> <button className="btn primary" disabled={busy} onClick={sendAsk}>{T.delSend}</button></div>
+        </Sheet>
       )}
       <div className={"toast" + (toast ? " show" : "")} role="status">{toast}</div>
     </section>
