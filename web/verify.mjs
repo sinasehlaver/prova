@@ -8,6 +8,30 @@ let ctx;
 try { ctx = await launch(); } catch (e) { console.warn("SKIP browser check:", e.message); process.exit(0); }
 const { browser, page, errors } = ctx;
 const fail = (m) => { console.error("FAIL:", m); process.exitCode = 1; };
+// Most lists start collapsed (and remember it): waits/clicks open every collapsed fold, retrying while content loads.
+const openFolds = () => page.evaluate(() => {
+  // one pass only: a second pass before React re-renders would click the same toggles shut again (nested folds open on the next wait-loop turn)
+  document.querySelectorAll(".fold-toggle[aria-expanded=false], .fee-year-toggle[aria-expanded=false]").forEach((t) => t.click());
+}).then(() => page.waitForTimeout(50)).catch(() => {});
+const origWait = page.waitForSelector.bind(page);
+page.waitForSelector = async (sel, o = {}) => {
+  if (o.state && o.state !== "visible") return origWait(sel, o);
+  const end = Date.now() + (o.timeout ?? 30000);
+  for (;;) {
+    await openFolds();
+    try { return await origWait(sel, { ...o, timeout: Math.min(2000, Math.max(1, end - Date.now())) }); }
+    catch (e) { if (Date.now() >= end || !/Timeout/.test(e.message)) throw e; }
+  }
+};
+// actions are not idempotent (a timed-out click may still have landed): wait (opening folds) first, then act ONCE
+for (const fn of ["click", "check", "fill"]) {
+  const orig = page[fn].bind(page);
+  page[fn] = async (sel, ...rest) => {
+    const o = (fn === "fill" ? rest[1] : rest[0]) || {};
+    await page.waitForSelector(sel, { timeout: o.timeout ?? 30000 });
+    return orig(sel, ...rest);
+  };
+}
 
 try {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -219,6 +243,9 @@ try {
   await page.click(".form .btn.primary");
   await page.waitForFunction(() => document.querySelectorAll(".member").length === 7);
   await page.screenshot({ path: `${SHOTS}/members.png`, fullPage: true });
+  // the AlertKinds fold starts collapsed (and remembers its state): open it before asserting rows
+  await page.waitForSelector(".kind-row", { state: "attached" });
+  await page.evaluate(() => { const t = document.querySelector(".kind-row")?.closest("section.fold")?.querySelector(".fold-toggle"); if (t?.getAttribute("aria-expanded") === "false") t.click(); });
   await page.waitForSelector(".kind-row");
   if ((await page.$$eval(".kind-row", (e) => e.length)) < 10) fail("alert kinds admin list");
 
@@ -240,7 +267,7 @@ try {
   // (no allocation, just exercises the review UI) - then record the real payment by hand as before.
   await page.click(".tab:has-text('Yönetim')");
   await page.click(".subtabs button:has-text('Üyeler')");
-  await page.locator(".member").filter({ has: page.locator(".member-name", { hasText: "Yönetici" }) }).getByText("Ödemeler", { exact: true }).click();
+  await page.locator(".member").filter({ has: page.locator(".member-name", { hasText: "Yönetici" }) }).getByText("Üye sayfası", { exact: true }).click();
   await page.waitForSelector(".pending-compact");
   await page.locator(".pending-compact").getByRole("button", { name: "Onayla", exact: true }).first().click(); // opens the approve window (Sheet)
   await page.waitForSelector(".sheet .pay-form");
@@ -251,7 +278,6 @@ try {
   await page.click(".a-rcpt:has-text('Onay bekliyor') .btn.danger");
   await page.waitForSelector(".a-rcpt .pill:has-text('Onay bekliyor')", { state: "detached" });
   await page.waitForSelector(".sheet .pay-form", { state: "detached" }); // window closes after reject
-  await page.waitForSelector(".a-rcpt.void"); // rejected = muted history card
   await page.screenshot({ path: `${SHOTS}/admin-pending-rejected.png`, fullPage: true });
   // per-user page order (2026-09-23): "Ek ücret ekle" before "Ödeme kaydet"; the item list above is NOT a selector
   const order = await page.evaluate(() => {
@@ -316,14 +342,14 @@ try {
   await page.screenshot({ path: `${SHOTS}/admin-overview.png`, fullPage: true });
   await page.waitForSelector(".a-rcpt");
   // the pending card fetches its member's items first (skeleton until then), so wait for the count to settle
-  await page.waitForFunction(() => document.querySelectorAll(".a-rcpt").length === 4, null, { timeout: 5000 }).catch(() => {});
-  if ((await page.$$eval(".a-rcpt", (e) => e.length)) !== 4) fail("expected 4 receipts in admin list");
+  await page.waitForFunction(() => document.querySelectorAll(".a-rcpt").length === 3, null, { timeout: 5000 }).catch(() => {});
+  { const n = await page.$$eval(".a-rcpt", (e) => e.length); if (n !== 3) fail(`expected 3 receipts in admin list (rejected one hidden), got ${n}`); }
   // a row drills into the same per-user detail as Üyeler, then back
   await page.click(".owe-list .owe-row >> nth=0");
   await page.waitForSelector(".pay-form, .bill-list");
   await page.click(".detail-head .icon-btn");
   await page.waitForSelector(".owe-list .owe-row");
-  await page.click(".a-rcpt >> nth=0 >> text=PDF'i göster");
+  await page.click(".a-rcpt:has(button:has-text(\"PDF'i göster\")) >> nth=0 >> button:has-text(\"PDF'i göster\")");
   await page.waitForSelector("embed.embed");
   await page.screenshot({ path: `${SHOTS}/admin-receipts.png`, fullPage: true });
   await page.click(".subtabs button:has-text('Ücretler')");
@@ -345,7 +371,8 @@ try {
   await page.click(".fee-bulk .btn:not(.primary)");
   await page.click(".subtabs button:has-text('Ekonomi')");
   await page.waitForSelector(".eco-chart svg[role=img]");
-  await page.waitForSelector(".eco-sug .eco-headline");
+  const sug = await page.$(".eco-sug"); // "Fiyat önerisi" is beta-hidden (SHOW_PRICE_SUGGESTION in Economics.jsx)
+  if (sug) await page.waitForSelector(".eco-sug .eco-headline");
   if ((await page.$$eval(".eco-col", (e) => e.length)) !== 6) fail("economics chart should have 6 months");
   if (!(await page.textContent(".eco-chart svg desc")).includes("gider")) fail("chart desc missing");
   await page.waitForSelector(".eco-list .eco-row");
@@ -353,9 +380,11 @@ try {
   await page.click(".eco-chart .eco-head .btn");
   await page.waitForSelector(".eco-table");
   await page.click(".eco-chart .eco-head .btn");
-  await page.click(".eco-sug .btn.primary"); // Uygula (gelecek aydan) -> next month's fee row
-  await page.waitForSelector(".toast.show");
-  await page.screenshot({ path: `${SHOTS}/admin-economics-applied.png`, fullPage: true });
+  if (sug) {
+    await page.click(".eco-sug .btn.primary"); // Uygula (gelecek aydan) -> next month's fee row
+    await page.waitForSelector(".toast.show");
+    await page.screenshot({ path: `${SHOTS}/admin-economics-applied.png`, fullPage: true });
+  }
   await page.click(".subtabs button:has-text('Ayarlar')");
   await page.waitForSelector("form.form input[type=checkbox]");
 

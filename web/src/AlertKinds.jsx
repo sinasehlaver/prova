@@ -50,7 +50,7 @@ export default function AlertKinds() {
 
   return (
     <section className="kinds-admin">
-      <Fold tag="h2" defaultOpen={false} title={tr.kinds.title} sum={kinds ? kinds.length : null}
+      <Fold foldKey="alerts.kinds" tag="h2" defaultOpen={false} title={tr.kinds.title} sum={kinds ? kinds.length : null}
         actions={<button className="btn primary" onClick={() => { setErr(""); setEdit(EMPTY); }}><PlusIcon width="18" height="18" />{tr.kinds.add}</button>}>
       {!kinds && (loadErr ? <ErrorState message={loadErr} onRetry={load} /> : <Skeleton rows={2} />)}
       {kinds && !kinds.length && <EmptyState title={tr.empty.kinds[0]} body={tr.empty.kinds[1]} />}

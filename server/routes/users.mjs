@@ -2,6 +2,7 @@ import { Router } from "express";
 import { bootstrapId, requireAdmin, newToken, setSessionCookie, normEmail } from "../lib/auth.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 import { isMonth, FEE_MIN_MONTH } from "../lib/billing.mjs";
+import { setActive, startBilling, statusPreview } from "../lib/status.mjs";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -51,7 +52,8 @@ export default ({ db }) => {
       sql: "INSERT INTO users (name, phone, email, role, invite_token, joined_month, created_at) VALUES (?,?,?,?,?,?,?)",
       args: [name, phone, email, role, newToken(), joined, Date.now()],
     });
-    res.status(201).json(adminUser(await byId(lastInsertRowid), true));
+    const { early } = await startBilling(db, Number(lastInsertRowid), joined); // day 16+: aidat starts next month (ADR #10)
+    res.status(201).json({ ...adminUser(await byId(lastInsertRowid), true), early });
   });
 
   r.post("/users/:id/regenerate-invite", async (req, res) => {
@@ -70,7 +72,8 @@ export default ({ db }) => {
     if (!u) return res.status(404).json({ error: "Bulunamadı" });
     if (u.status !== "pending") return res.status(409).json({ error: "Bu hesap onay bekleyen bir kayıt değil" });
     await db.execute({ sql: "UPDATE users SET status = 'approved', active = 1, joined_month = ? WHERE id = ?", args: [currentMonth(), u.id] });
-    res.json(adminUser(await byId(u.id)));
+    const { early } = await startBilling(db, u.id, currentMonth());
+    res.json({ ...adminUser(await byId(u.id)), early });
   });
 
   r.post("/users/:id/reject", async (req, res) => {
@@ -79,6 +82,13 @@ export default ({ db }) => {
     if (u.status !== "pending") return res.status(409).json({ error: "Bu hesap onay bekleyen bir kayıt değil" });
     await db.execute({ sql: "DELETE FROM users WHERE id = ? AND status = 'pending'", args: [u.id] });
     res.json({ ok: true });
+  });
+
+  // Before the Pasif / reactivate toggle (ADR 0001 #6/#7/#10): balance, day-15 side, and the passive months to offer.
+  r.get("/users/:id/status-preview", async (req, res) => {
+    const u = await byId(req.params.id, req);
+    if (!u || u.status === "pending") return res.status(404).json({ error: "Bulunamadı" });
+    res.json(await statusPreview(db, u));
   });
 
   r.patch("/users/:id", async (req, res) => {
@@ -115,6 +125,14 @@ export default ({ db }) => {
       if (!isMonth(b.joined_month) || b.joined_month < FEE_MIN_MONTH || b.joined_month > currentMonth())
         return res.status(400).json({ error: "Geçersiz faturalama başlangıcı" });
       newJoined = b.joined_month;
+    }
+
+    // Going passive / active again moves charges (day-15 rule, passive months); bill_months = passive months to bill.
+    if (b.active !== undefined && !!b.active !== !!u.active) {
+      if (b.bill_months !== undefined && (!Array.isArray(b.bill_months) || b.bill_months.length > 240))
+        return res.status(400).json({ error: "Geçersiz ay seçimi" });
+      try { await setActive(db, u, !!b.active, { billMonths: b.bill_months ?? [] }); }
+      catch (e) { if (e.status) return res.status(e.status).json({ error: e.message }); throw e; }
     }
 
     await db.execute({

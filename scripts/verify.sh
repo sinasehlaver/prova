@@ -13,7 +13,7 @@ port=$(../.claude/scripts/freeport.sh)
 tmp=$(mktemp -d -t prova-verify)
 tok="verify-admin-token"
 export PORT="$port" DATABASE_URL="file:$tmp/verify.db" SEED_DEMO=1 ADMIN_INVITE_TOKEN="$tok"
-node server/index.mjs > "$tmp/server.log" 2>&1 &
+node --import ./scripts/verify-clock.mjs server/index.mjs > "$tmp/server.log" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -rf "$tmp"' EXIT
 

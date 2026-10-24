@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { kvGet, kvSet } from "./nav.js";
 import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon } from "./icons.jsx";
@@ -7,6 +8,7 @@ import CopyBtn from "./CopyBtn.jsx";
 import { reservationText } from "./resText.js";
 import { DatePicker, GridPick, Select } from "./Controls.jsx";
 import { ErrorState, Skeleton } from "./States.jsx";
+import { fmtTRY } from "./Billing.jsx";
 import { D, EDIT_CUTOFF_MS, H, dayStart, fmtDay, fmtLong, fmtTime, fmtWd, hourLabel, weekStart } from "./time.js";
 
 // ponytail: fixed 08:00-24:00 window in the UI (API accepts any whole hour). Make it a setting if a room runs earlier.
@@ -260,7 +262,10 @@ export function NewSheet({ day: day0, hour, hours: initialHours, res: parentRes,
     setBusy(true); setErr("");
     try {
       const body = { start_ms: day + start * H, hours: fit, note, people };
-      if (edit) { await api("PATCH", `/reservations/${edit.id}`, body); onDone(tr.cal.edited); }
+      if (edit) {
+        const d = await api("PATCH", `/reservations/${edit.id}`, body);
+        onDone(d?.credit_try > 0 ? tr.cal.editedCredit(fmtTRY(d.credit_try)) : d?.debt_try > 0 ? tr.cal.editedDebt(fmtTRY(d.debt_try)) : tr.cal.edited);
+      }
       else { await api("POST", "/reservations", body); setMade(reservationText({ ...body, end_ms: body.start_ms + fit * H })); onDone(null); }
     } catch (x) { setErr(x.message || tr.err.generic); onDone(null); } finally { setBusy(false); }
   };
@@ -394,8 +399,13 @@ export default function Calendar({ me }) {
   const wide = useWide();
   const [now, setNow] = useState(Date.now());
   const today = dayStart(now);
-  const [sel, setSel] = useState(today); // anchor day: first day of the 3-day window, or any day of the shown week (7 gün)
+  const [sel, setSel] = useState(() => { const v = Number(kvGet("cal.sel")); return Number.isFinite(v) && v >= today && v < today + 400 * D ? dayStart(v) : today; });
+  useEffect(() => { kvSet("cal.sel", sel); }, [sel]); // anchor day: first day of the 3-day window, or any day of the shown week (7 gün)
   const [pref, setPref] = useState(() => { try { const v = localStorage.getItem(VIEW_KEY); return v === "3" || v === "7" ? v : null; } catch { return null; } });
+  // the read-only note ("Üye hesabısın…") goes away for good once this account presses Tamam (per user, this browser)
+  const noteKey = `prova.noteOk.${me.id}`;
+  const [noteOk, setNoteOk] = useState(() => { try { return localStorage.getItem(noteKey) === "1"; } catch { return false; } });
+  const okNote = () => { setNoteOk(true); try { localStorage.setItem(noteKey, "1"); } catch { /* private mode: hidden for this visit only */ } };
   const [res, setRes] = useState(null); // null = loading
   const [holds, setHolds] = useState([]); // other members' live soft holds
   const [loadErr, setLoadErr] = useState("");
@@ -463,8 +473,12 @@ export default function Calendar({ me }) {
 
   return (
     <section className="cal cal-wk">
-      {me.observer && <p className="notice observer-note" role="note">{tr.cal.observer}</p>}
-      {me.role === "listener" && <p className="notice observer-note" role="note">{tr.cal.listener}</p>}
+      {!noteOk && (me.observer || me.role === "listener") && (
+        <div className="notice observer-note" role="note">
+          <span>{me.observer ? tr.cal.observer : tr.cal.listener}</span>
+          <button type="button" className="btn sm" onClick={okNote}>{tr.ui.ok}</button>
+        </div>
+      )}
 
       {/* Everything down to the day strip is pinned under the top bar; only the hour grid scrolls. Keep this a direct child of section.cal. */}
       <div className="cal-sticky">

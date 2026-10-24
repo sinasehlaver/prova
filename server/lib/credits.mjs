@@ -1,5 +1,6 @@
 // Member credit = money the community owes the member back. Never stored as a balance - derived from receipts:
-//   owed = overpayments on ok receipts + part-payments sitting on charges that were later voided/waived - admin settlements.
+//   owed = overpayments on ok receipts + part-payments sitting on charges that were later voided/waived - admin settlements
+//   + coverage above a charge's amount (a paid item whose price went down in a fee review, ADR 0001 #9).
 // A rejected receipt (status no longer 'ok') drops out by itself. Whole TRY.
 import { COVERED_SQL, fail, monthRange, nextMonth, projectedSub } from "./billing.mjs";
 import { serial } from "./serial.mjs";
@@ -27,22 +28,45 @@ export async function creditOutlook(db, user, month, needTry, balanceTry) {
   return { need_try: needTry, prior_try: prior + planned, available_try: available, covered_try: Math.min(available, needTry) };
 }
 
-export async function creditBalance(db, userId) {
+/** Signed alacak (db OR tx). Below 0 only for a moment: absorbSpentCreditRaw turns it into a "Harcanan alacak" item. */
+export async function creditRaw(db, userId) {
   const r = (await db.execute({
     sql: `SELECT
       (SELECT COALESCE(SUM(overpaid_try), 0) FROM receipts WHERE user_id = ?1 AND status = 'ok')
       + (SELECT COALESCE(SUM(rc.applied_try), 0) FROM receipt_charges rc
            JOIN receipts r ON r.id = rc.receipt_id JOIN charges c ON c.id = rc.charge_id
-           WHERE r.user_id = ?1 AND r.status = 'ok' AND (c.voided_at IS NOT NULL OR c.waived_at IS NOT NULL))
-      - (SELECT COALESCE(SUM(amount_try), 0) FROM credit_settlements WHERE user_id = ?1) AS owed`,
+           WHERE r.user_id = ?1 AND r.status = 'ok'
+             AND (c.voided_at IS NOT NULL OR (c.waived_at IS NOT NULL AND c.waive_kind IS NULL)))
+      - (SELECT COALESCE(SUM(amount_try), 0) FROM credit_settlements WHERE user_id = ?1)
+      + (SELECT COALESCE(SUM(amount_try), 0) FROM charges WHERE user_id = ?1 AND credit_fix = 1 AND voided_at IS NULL)
+      + (SELECT COALESCE(SUM(MAX(${COVERED_SQL} - c.amount_try, 0)), 0) FROM charges c
+           WHERE c.user_id = ?1 AND c.voided_at IS NULL AND c.waived_at IS NULL) AS owed`,
     args: [userId],
   })).rows[0];
-  return Math.max(0, Number(r.owed));
+  return Number(r.owed);
+}
+export const creditBalance = async (db, userId) => Math.max(0, await creditRaw(db, userId));
+
+/** ADR 0001 #8 label (data text, written once): spent alacak taken back -> a debt item of this month. */
+export const SPENT_NOTE = "Harcanan alacak";
+/**
+ * Raw (db OR tx, never locks): after anything that can take alacak back (payment deleted / undone / rejected, unwaive,
+ * passive month billed again), a negative balance becomes a "Harcanan alacak" adjustment charge in the current month
+ * (credit_fix=1, which creditRaw adds back = alacak 0). Returns the amount added (0 = nothing to do).
+ */
+export async function absorbSpentCreditRaw(db, userId, reason = null) {
+  const raw = await creditRaw(db, userId);
+  if (raw >= 0) return 0;
+  await db.execute({
+    sql: "INSERT INTO charges (user_id, month, kind, amount_try, note, credit_fix) VALUES (?, ?, 'adjustment', ?, ?, 1)",
+    args: [userId, currentMonth(), -raw, reason ? `${SPENT_NOTE} (${reason})` : SPENT_NOTE],
+  });
+  return -raw;
 }
 
 export async function creditSettlements(db, userId) {
   return (await db.execute({
-    sql: "SELECT id, amount_try, note, created_at FROM credit_settlements WHERE user_id = ? ORDER BY id DESC LIMIT 50", args: [userId],
+    sql: "SELECT id, amount_try, note, kind, created_at FROM credit_settlements WHERE user_id = ? ORDER BY id DESC LIMIT 50", args: [userId],
   })).rows.map((r) => ({ ...r }));
 }
 
@@ -52,8 +76,10 @@ export async function creditPayload(db, userId) {
   return { balance_try, settlements };
 }
 
-/** Admin: record that (part of) the owed credit was paid back / settled by hand. amountTry omitted = the whole balance. */
-export const settleCredit = (db, userId, { amountTry, note, now = Date.now() } = {}) => serial(async () => {
+/** Admin: (part of) the owed credit was paid back (kind 'refund', "Geri ödendi") or cleared (kind 'forfeit', "Alacağı sil",
+ *  e.g. a mistaken paid booking). amountTry omitted = the whole balance. */
+export const settleCredit = (db, userId, { amountTry, note, kind = "refund", now = Date.now() } = {}) => serial(async () => {
+  if (kind !== "refund" && kind !== "forfeit") throw fail(400, "Geçersiz kapatma türü");
   const u = (await db.execute({ sql: "SELECT id FROM users WHERE id = ?", args: [userId] })).rows[0];
   if (!u) throw fail(404, "Üye bulunamadı");
   const balance = await creditBalance(db, userId);
@@ -62,8 +88,8 @@ export const settleCredit = (db, userId, { amountTry, note, now = Date.now() } =
   if (!Number.isInteger(amount) || amount <= 0) throw fail(400, "Tutar pozitif tam sayı olmalı");
   if (amount > balance) throw fail(400, "Tutar mevcut alacaktan fazla olamaz");
   await db.execute({
-    sql: "INSERT INTO credit_settlements (user_id, amount_try, note, created_at) VALUES (?,?,?,?)",
-    args: [userId, amount, String(note ?? "").trim().slice(0, 200) || null, now],
+    sql: "INSERT INTO credit_settlements (user_id, amount_try, note, kind, created_at) VALUES (?,?,?,?,?)",
+    args: [userId, amount, String(note ?? "").trim().slice(0, 200) || null, kind, now],
   });
   return amount;
 });

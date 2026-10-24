@@ -79,7 +79,8 @@ export function createReservation(db, { bookerId, bookerRole, startMs, hours, no
 
 /**
  * Edit own booking (start / hours / note / people). Same validation + overlap + soft-hold rules as createReservation (own row excluded
- * from the overlap check); the booking charge is re-priced in the same tx (locked when paid, see repriceBookingCharge).
+ * from the overlap check); the booking charge is re-priced in the same tx (paid ones too, see repriceBookingCharge).
+ * Returns { debt_try, credit_try }: what the edit changed on money already paid (0/0 when nothing was paid).
  * Only the booker; within the last hour before start (or started/past) it is admin-only to edit (same as cancel). Throws with .status.
  */
 export function updateReservation(db, id, user, { startMs, hours, note = null, people = 0, now = Date.now() }) {
@@ -105,9 +106,10 @@ export function updateReservation(db, id, user, { startMs, hours, note = null, p
       const held = await foreignHoldRaw(tx, user.id, startMs, endMs, now);
       if (held) throw fail(409, `Bu saat az önce başkası (${held.user_name}) tarafından ayrıldı. Birazdan tekrar dene ya da başka bir saat seç.`);
       await tx.execute({ sql: "UPDATE reservations SET start_ms = ?, end_ms = ?, note = ?, people = ? WHERE id = ?", args: [startMs, endMs, cleanNote, people, id] });
-      await repriceBookingCharge(tx, id, user.id, people, startMs);
+      const diff = await repriceBookingCharge(tx, id, user.id, people, startMs);
       await dropHoldRaw(tx, user.id);
       await tx.commit();
+      return diff;
     } catch (e) {
       await tx.rollback().catch(() => {});
       throw e;
@@ -152,7 +154,7 @@ export function cancelReservation(db, id, user, { reason, confirm, now = Date.no
         sql: "INSERT INTO reservation_audit (reservation_id, action, actor_id, booker_id, reason, start_ms, end_ms, created_at) VALUES (?,?,?,?,?,?,?,?)",
         args: [id, own ? "cancel" : "admin_cancel", user.id, r.booker_id, why, r.start_ms, r.end_ms, now],
       });
-      await voidBookingCharges(tx, id, now); // unpaid ones only; paid stay (admin adjusts by hand)
+      await voidBookingCharges(tx, id, now); // paid or not: the paid part becomes alacak (ADR 0001 #1)
       await tx.commit();
     } catch (e) {
       await tx.rollback().catch(() => {});

@@ -2,8 +2,9 @@
 import { Router } from "express";
 import { BOOTSTRAP_ID_SQL, bootstrapId, requireAdmin } from "../lib/auth.mjs";
 import { addAdjustment, canBrowse, ensureMonth, fail, isMonth, listFees, maxMonth, monthRange, outstandingOverview, setFee, waiveCharge } from "../lib/billing.mjs";
-import { creditPayload, settleCredit } from "../lib/credits.mjs";
-import { deleteReceipt, getSettings, listReceipts, parseReceipt, parseTokens, recordPayment, reviewReceipt, undoApproval } from "../lib/payments.mjs";
+import { creditBalance, creditPayload, settleCredit } from "../lib/credits.mjs";
+import { listReviews, resolveReviews } from "../lib/fee-reviews.mjs";
+import { deleteReceipt, getSettings, listReceipts, parseReceipt, parseTokens, payFromCredit, recordPayment, reviewReceipt, undoApproval } from "../lib/payments.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 import { billingPayload, bodyBuf, guard, rawPdf } from "./billing.mjs";
 
@@ -32,7 +33,18 @@ export default ({ db }) => {
     const first = (await db.execute(`SELECT MIN(month) AS m FROM charges WHERE voided_at IS NULL AND user_id <> ${BOOTSTRAP_ID_SQL}`)).rows[0]?.m;
     let joined = users.reduce((a, u) => (a && a < u.joined_month ? a : u.joined_month), null) ?? currentMonth();
     if (first && first < joined) joined = first;
-    res.json({ ...(await outstandingOverview(db, month)), months: monthRange(joined < month ? joined : month, maxMonth()) });
+    const ov = await outstandingOverview(db, month);
+    // credit_try per row: drives the per-row "Alacaktan öde" button (ADR 0001 #4); only rows with debt need it
+    for (const u of ov.users) u.credit_try = u.debt_try > 0 ? await creditBalance(db, u.id) : 0;
+    // a passive member stays listed while they still have alacak (ADR 0001 #7; debt is covered by outstandingOverview)
+    const listed = new Set(ov.users.map((u) => u.id));
+    const passive = (await db.execute(`SELECT id, name FROM users WHERE active = 0 AND status <> 'pending' AND id <> ${BOOTSTRAP_ID_SQL}`)).rows;
+    for (const p of passive) {
+      if (listed.has(p.id)) continue;
+      const credit = await creditBalance(db, p.id);
+      if (credit !== 0) ov.users.push({ id: p.id, name: p.name, active: false, outstanding_try: 0, debt_try: 0, credit_try: credit });
+    }
+    res.json({ ...ov, months: monthRange(joined < month ? joined : month, maxMonth()) });
   }));
 
   // ---- receipts
@@ -118,24 +130,37 @@ export default ({ db }) => {
     const id = await addAdjustment(db, { userId: u.id, month: b.month, amountTry: b.amount_try, note: b.note });
     res.status(201).json({ id });
   }));
-  // "Alacağı kapat": the community paid the member's overpayment back (or settled it by hand). amount_try omitted = all of it.
+  // "Geri ödendi" (kind refund, default) / "Alacağı sil" (kind forfeit). amount_try omitted = all of it.
   r.post("/admin/users/:id/credit/settle", guard(async (req, res) => {
     const u = await userOf(req.params.id, req);
     const b = req.body ?? {};
-    const amount = await settleCredit(db, u.id, { amountTry: b.amount_try, note: b.note });
+    const amount = await settleCredit(db, u.id, { amountTry: b.amount_try, note: b.note, kind: b.kind ?? "refund" });
     res.json({ settled_try: amount, credit: await creditPayload(db, u.id) });
   }));
+  // "Alacaktan öde" (ADR 0001 #4): the member's alacak pays their oldest open debt. 409 when there's no alacak or no debt.
+  r.post("/admin/users/:id/credit/pay", guard(async (req, res) => {
+    const u = await userOf(req.params.id, req);
+    const { paid_try } = await payFromCredit(db, u);
+    res.json({ paid_try, credit: await creditPayload(db, u.id) });
+  }));
+  // mode: 'all' (default, "Tamamını iptal et") | 'rest' ("Kalanı sil", part-paid charges only)
   r.post("/admin/charges/:id/waive", guard(async (req, res) => {
-    await waiveCharge(db, Number(req.params.id), req.body?.waived !== false);
+    await waiveCharge(db, Number(req.params.id), req.body?.waived !== false, Date.now(), req.body?.mode ?? "all");
     res.json({ ok: true });
   }));
 
-  // ---- fee editor: any month >= 2025-01; unpaid charges of that month are re-priced (see setFee). requireAdmin via the /admin mount.
+  // ---- fee editor: any month >= 2025-01; affected items of that month get fee reviews (see setFee). requireAdmin via the /admin mount.
   r.get("/admin/fees", guard(async (_req, res) => res.json(await listFees(db))));
   r.post("/admin/fees", guard(async (req, res) => {
     const b = req.body ?? {};
-    const repriced = await setFee(db, { effectiveFrom: b.effective_from, subscriptionTry: b.subscription_try, bookingTry: b.booking_try });
-    res.status(201).json({ fees: await listFees(db), repriced });
+    const reviews = await setFee(db, { effectiveFrom: b.effective_from, subscriptionTry: b.subscription_try, bookingTry: b.booking_try });
+    res.status(201).json({ fees: await listFees(db), reviews });
+  }));
+  // ADR 0001 #9 "Etkilenen kalemler": open per-item price decisions; decision 'apply' | 'keep' on up to 1000 ids
+  r.get("/admin/fee-reviews", guard(async (_req, res) => res.json(await listReviews(db))));
+  r.post("/admin/fee-reviews/resolve", guard(async (req, res) => {
+    const resolved = await resolveReviews(db, req.body?.ids, req.body?.decision);
+    res.json({ resolved, open: await listReviews(db) });
   }));
 
   // ---- payment settings

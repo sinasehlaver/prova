@@ -3,9 +3,9 @@
 import express, { Router } from "express";
 import { requireAuth } from "../lib/auth.mjs";
 import { rateLimit } from "../lib/ratelimit.mjs";
-import { browsableMonths, canBrowse, ensureMonth, fail, isMonth, monthRange, monthView, openElsewhere, projectedSub, userDebt } from "../lib/billing.mjs";
+import { browsableMonths, canBrowse, ensureMonths, fail, isMonth, monthRange, monthView, openElsewhere, projectedSub, userDebt } from "../lib/billing.mjs";
 import { creditOutlook, creditPayload } from "../lib/credits.mjs";
-import { deleteReceipt, getSettings, listReceipts, MAX_PDF, resubmitReceipt, submitReceipt } from "../lib/payments.mjs";
+import { deleteReceipt, getSettings, listReceipts, MAX_PDF, payFromCredit, resubmitReceipt, submitReceipt } from "../lib/payments.mjs";
 import { currentMonth } from "../lib/tz.mjs";
 import billingAdmin from "./billing-admin.mjs";
 
@@ -20,12 +20,12 @@ export const guard = (fn) => async (req, res, next) => {
 // credit_cover = creditOutlook (display-only: how much of this month the existing credit would cover; nothing applied).
 export async function billingPayload(db, user, month, { admin = false } = {}) {
   const future = month > currentMonth();
-  if (!future) await ensureMonth(db, user, month);
-  // Past months nobody opened have no rent row yet; make them so past unpaid aidat shows in the composer's "other months".
-  for (const m of monthRange(user.joined_month, currentMonth())) if (m !== month) await ensureMonth(db, user, m);
-  const [view, receipts, cfg, credit, planned, other_open, debt] = await Promise.all([
+  // Viewed month (if not future) + past months nobody opened (so past unpaid aidat shows in the composer's "other months"),
+  // batched: the old one-month-at-a-time loop made every month switch slow.
+  await ensureMonths(db, user, monthRange(user.joined_month, currentMonth()));
+  const [view, receipts, cfg, credit, planned, other_open, debt, months] = await Promise.all([
     monthView(db, user.id, month), listReceipts(db, { userId: user.id, month, viewer: admin ? "admin" : "member" }), getSettings(db), creditPayload(db, user.id),
-    projectedSub(db, user, month), openElsewhere(db, user, month), userDebt(db, user.id),
+    projectedSub(db, user, month), openElsewhere(db, user, month), userDebt(db, user.id), browsableMonths(db, user),
   ]);
   const projected_try = planned?.amount_try ?? 0;
   const credit_cover = await creditOutlook(db, user, month, view.kalan + projected_try, credit.balance_try);
@@ -34,7 +34,7 @@ export async function billingPayload(db, user, month, { admin = false } = {}) {
   const pay_to = admin || owes ? { iban: cfg.iban, holder: cfg.holder } : { iban: "", holder: "", hidden: true };
   return {
     ...view, items: planned ? [planned, ...view.items] : view.items, projected_try, future, other_open,
-    months: await browsableMonths(db, user), receipts, pay_to,
+    months, receipts, pay_to,
     ...debt, // debt_try + debt_months = cumulative unpaid over all months <= current (unpaid stays in its own month)
     credit, credit_cover, // credit = what the community owes the member (all months)
   };
@@ -68,6 +68,12 @@ export default ({ db }) => {
     const month = await pickMonth(db, req.query.month, req.user); // the month being viewed (default current); bad/out of range = 400
     const id = await submitReceipt(db, req.user, { buffer: bodyBuf(req), filename: req.query.filename, month });
     res.status(201).json((await listReceipts(db, { id }))[0]);
+  }));
+
+  // "Alacaktan öde" on the member's own page (ADR 0001 #4): own alacak -> own oldest debt. No input; 409 if nothing to do.
+  r.post("/billing/credit/pay", requireAuth, rateLimit({ max: 10, windowMs: 60_000, key: (req) => `creditpay:${req.user.id}` }), guard(async (req, res) => {
+    const { paid_try } = await payFromCredit(db, req.user, { byMember: true });
+    res.json({ paid_try });
   }));
 
   r.delete("/billing/receipts/:id", requireAuth, guard(async (req, res) => {

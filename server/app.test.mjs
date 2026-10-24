@@ -89,7 +89,9 @@ test("bootstrap admin (lowest id, from seed) is hidden from GET /users for every
 
 test("bootstrap admin: can't reserve or hold, never billed, not in economics; full admin read access", async () => {
   const H = 3600_000;
-  const start = Math.ceil(Date.now() / H) * H + 40 * 24 * H;
+  // 10:00 Istanbul, 40 days out: start + 5h must end before the 22:00 curfew whatever the clock says now
+  const D = 24 * H, OFF = 3 * H;
+  const start = Math.floor((Date.now() + OFF) / D) * D - OFF + 40 * D + 10 * H;
   const r = await t.fetch("/api/reservations", { method: "POST", as: t.boot, body: { start_ms: start, hours: 1 } });
   assert.equal(r.status, 403);
   assert.match((await r.json()).error, /rezervasyon yapamaz/);
@@ -155,14 +157,14 @@ test("admin cannot deactivate self; empty name rejected", async () => {
 test("every admin route: anonymous 401, member 403 (admin area is strongly guarded)", async () => {
   const routes = [
     ["GET", "/api/users"], ["POST", "/api/users"], ["PATCH", "/api/users/1"], ["POST", "/api/users/1/regenerate-invite"],
-    ["POST", "/api/users/1/approve"], ["POST", "/api/users/1/reject"],
+    ["POST", "/api/users/1/approve"], ["POST", "/api/users/1/reject"], ["GET", "/api/users/1/status-preview"],
     ["GET", "/api/admin/billing/overview"],
     ["GET", "/api/admin/receipts"], ["POST", "/api/admin/receipts/1/approve"], ["POST", "/api/admin/receipts/1/reject"], ["POST", "/api/admin/receipts/1/undo-approval"],
     ["POST", "/api/admin/receipts/parse"],
     ["GET", "/api/admin/users/1/billing"], ["GET", "/api/admin/users/1/receipts"], ["POST", "/api/admin/users/1/receipts"],
     ["GET", "/api/admin/users/1/reservations"],
-    ["POST", "/api/admin/users/1/charges"], ["POST", "/api/admin/charges/1/waive"],
-    ["GET", "/api/admin/fees"], ["POST", "/api/admin/fees"], ["GET", "/api/admin/settings"], ["PUT", "/api/admin/settings"],
+    ["POST", "/api/admin/users/1/charges"], ["POST", "/api/admin/charges/1/waive"], ["POST", "/api/admin/users/1/credit/pay"],
+    ["GET", "/api/admin/fees"], ["POST", "/api/admin/fees"], ["GET", "/api/admin/fee-reviews"], ["POST", "/api/admin/fee-reviews/resolve"], ["GET", "/api/admin/settings"], ["PUT", "/api/admin/settings"],
     ["GET", "/api/admin/economics"], ["POST", "/api/admin/economics/apply"],
     ["GET", "/api/admin/costs"], ["POST", "/api/admin/costs"], ["PATCH", "/api/admin/costs/1"], ["DELETE", "/api/admin/costs/1"],
     ["GET", "/api/admin/cost-templates"], ["PUT", "/api/admin/cost-templates/kira"], ["DELETE", "/api/admin/cost-templates/kira"],

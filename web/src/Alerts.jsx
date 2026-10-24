@@ -169,7 +169,7 @@ export default function Alerts() {
         })}
       </div>
 
-      <Fold title={tr.alerts.history} sum={hist.length ? `${hist.length}${more ? "+" : ""}` : null} defaultOpen={false} className="fold-hist">
+      <Fold foldKey="alerts.history" title={tr.alerts.history} sum={hist.length ? `${hist.length}${more ? "+" : ""}` : null} defaultOpen={false} className="fold-hist">
       {histErr && hist.length === 0 && <ErrorState onRetry={loadFirst} />}
       {open && !histErr && hist.length === 0 && <EmptyState title={tr.empty.history[0]} body={tr.empty.history[1]} />}
       <ul className="list">

@@ -117,6 +117,8 @@ Go to the **Takvim** (Calendar) tab.
 - **Rezervasyonlarım** (My reservations) lists your own bookings grouped by
   year, then month (newest first, collapsed by default), with paid/unpaid totals per month
   and overall. You can edit or cancel a booking from there until 1 hour before it starts (the buttons disappear after that). The calendar's booking view has **Düzenle** for the same case.
+  Editing an already paid booking is fine: fewer people turns the paid difference into credit,
+  more people leaves the extra to pay on the same item (the toast says which).
 
 ### Paying your dues
 
@@ -133,6 +135,8 @@ sits as "İnceleniyor"/"Onay bekliyor" until then) — verifying transfers
 automatically turned out to be unreliable, so a human always decides. If you
 paid more or less than expected, the app tracks the difference (as a "Kalan"
 balance owed, or a credit for next time) automatically once the admin records it.
+If a payment is deleted after its credit was already spent, the spent amount
+comes back as a normal "Harcanan alacak" item to pay, so credit never goes negative.
 
 You can also flip forward to **future months** (up to 12 ahead) with the month
 arrows, even before anything is booked: you'll see bookings you already made
@@ -141,6 +145,13 @@ estimate until the month starts). If the community owes you money (a credit
 from overpaying), the page shows how much of that month it would cover, e.g.
 "next month's dues are already covered by your credit". That's a preview; it
 turns into "paid" once an admin applies the credit.
+
+Monthly dues follow a day-15 rule (Istanbul time): join or come back on day
+1–15 and that month's dues apply; on day 16 or later they start next month.
+Going passive on day 1–15 removes that month's dues (already paid → credit);
+on day 16 or later the month is charged in full. Months without dues show as
+"Aidat · Pasif". When an admin reactivates a member, they choose which of the
+passive months (if any) get dues.
 
 You can pick any month directly from the month picker (month and year). An
 uploaded dekont you sent by mistake can be deleted, as long as an admin hasn't
@@ -185,8 +196,10 @@ Everything above, plus, under **Yönetim** (Admin):
   cancelled and its unpaid charges voided) or reject. The count shows on the Yönetim tab.
 - **Ücretler** — set the monthly dues and per-person booking fee for any month
   from January 2025 on (edit a month from its **Düzenle** button). Years are collapsed by default. A change
-  re-prices that month's unpaid charges only; paid, partly paid and waived
-  items keep their amount.
+  never re-prices existing items by itself: every affected aidat or booking of that month (paid
+  ones too) opens in **Etkilenen kalemler**, where you keep the old price or apply the new one per
+  item or for all. A paid item that gets cheaper leaves the difference as credit; dearer, as debt.
+  Undecided items keep the old price and wait ("N kalem fiyat kararı bekliyor · İncele").
 - **Ekonomi** — income vs. cost chart for the last 6 months, and a suggested
   fee increase if costs have outpaced what's coming in (the suggestion is hidden while it's in beta).
 - **Uyarı türleri** — add/edit/reorder the alert buttons.

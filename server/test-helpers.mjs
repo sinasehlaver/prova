@@ -8,7 +8,11 @@ import { openDb, migrate } from "./lib/db.mjs";
 import { seed } from "./seed.mjs";
 import { createApp } from "./app.mjs";
 import { COOKIE, newToken } from "./lib/auth.mjs";
-import { currentMonth } from "./lib/tz.mjs";
+import { currentMonth, OFFSET_MS } from "./lib/tz.mjs";
+import { clock } from "./lib/status.mjs";
+
+// Day-15 rule (ADR 0001 #10): pin "today" to day 10 of the real month, so members created by tests get this month's aidat.
+{ const [y, m] = currentMonth().split("-").map(Number); const at = Date.UTC(y, m - 1, 10, 10) - OFFSET_MS; clock.now = () => at; }
 
 export async function makeTestApp() {
   const dir = mkdtempSync(join(tmpdir(), "prova-test-"));

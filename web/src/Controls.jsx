@@ -12,7 +12,7 @@ function Chevron() {
 }
 
 /** Popover anchored under (or above) `anchor`. Closes on outside press / Esc (Esc never reaches the Sheet). */
-function Popover({ anchor, onClose, minWidth = 0, children, className = "", onKeyDown }) {
+function Popover({ anchor, onClose, minWidth = 0, fit = false, children, className = "", onKeyDown }) {
   const ref = useRef();
   const [pos, setPos] = useState(null);
   const place = useCallback(() => {
@@ -21,8 +21,9 @@ function Popover({ anchor, onClose, minWidth = 0, children, className = "", onKe
     const ph = p.offsetHeight, below = window.innerHeight - a.bottom - 8, above = a.top - 8;
     const up = ph > below && above > below;
     const w = Math.max(a.width, minWidth);
-    const left = Math.min(Math.max(8, a.left), Math.max(8, window.innerWidth - w - 8));
-    setPos({ left, width: w, ...(up ? { bottom: window.innerHeight - a.top + 6, maxHeight: above } : { top: a.bottom + 6, maxHeight: below }) });
+    const fw = fit ? Math.max(w, p.scrollWidth + 2) : w;
+    const left = Math.min(Math.max(8, a.left), Math.max(8, window.innerWidth - fw - 8));
+    setPos({ left, ...(fit ? { minWidth: w, width: "max-content", maxWidth: window.innerWidth - 16 } : { width: w }), ...(up ? { bottom: window.innerHeight - a.top + 6, maxHeight: above } : { top: a.bottom + 6, maxHeight: below }) });
   }, [anchor, minWidth]);
   useLayoutEffect(place, [place]);
   useEffect(() => {
@@ -70,10 +71,10 @@ export function Select({ value, onChange, options, className = "", ariaLabel, au
       <button type="button" ref={btn} id={id} className={`ctl-btn ${className}`} role="combobox" aria-haspopup="listbox" aria-expanded={open}
         aria-controls={open ? `${uid}-list` : undefined} aria-activedescendant={open ? `${uid}-${act}` : undefined} aria-label={ariaLabel}
         data-autofocus={autofocus ? "" : undefined} disabled={disabled} onClick={() => (open ? close() : openIt())} onKeyDown={onKey}>
-        <span className="ctl-val">{cur ? cur.label : ""}</span><Chevron />
+        <span className="ctl-val ctl-fit"><span className="ctl-cur">{cur ? cur.label : ""}</span>{options.map((o) => <span key={String(o.value)} className="ctl-size" aria-hidden="true">{o.label}</span>)}</span><Chevron />
       </button>
       {open && (
-        <Popover anchor={btn} onClose={close} className="ctl-list-wrap">
+        <Popover anchor={btn} onClose={close} fit className="ctl-list-wrap">
           <ul className="ctl-list" role="listbox" id={`${uid}-list`}>
             {options.map((o, i) => (
               <li key={String(o.value)} id={`${uid}-${i}`} role="option" aria-selected={i === idx} className={`ctl-opt${i === act ? " act" : ""}${i === idx ? " sel" : ""}`}

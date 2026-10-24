@@ -64,8 +64,8 @@ export default ({ db }) => {
 
   r.patch("/reservations/:id", guard(async (req, res) => {
     const b = req.body ?? {};
-    await updateReservation(db, Number(req.params.id), req.user, { startMs: b.start_ms, hours: b.hours, note: b.note, people: b.people ?? 0 });
-    res.json({ ok: true });
+    const diff = await updateReservation(db, Number(req.params.id), req.user, { startMs: b.start_ms, hours: b.hours, note: b.note, people: b.people ?? 0 });
+    res.json({ ok: true, ...diff });
   }));
 
   r.delete("/reservations/:id", guard(async (req, res) => {

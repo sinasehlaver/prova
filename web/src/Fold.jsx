@@ -1,12 +1,14 @@
-import { useId, useState } from "react";
+import { useId } from "react";
+import useFoldState from "./useFoldState.js";
 
 /**
  * Collapsible section: chevron header (with an optional `sum` in <small>) + body that stays mounted via `hidden`.
  * tag: heading element ("h3" sec-title look, "h2" page-head look); actions: buttons shown right of the header;
- * bare: no <section> wrapper margins (for nesting inside a card).
+ * foldKey: stable semantic key that remembers open/closed across reloads (localStorage `prova.folds`, see useFoldState.js);
+ * ALWAYS pass it, include the item id for per-item folds (`admin.user.<id>.receipts`, `billing.month.<YYYY-MM>`). Never toggled -> defaultOpen.
  */
-export default function Fold({ title, sum, defaultOpen = true, tag = "h3", actions, className = "", children }) {
-  const [open, setOpen] = useState(defaultOpen);
+export default function Fold({ title, sum, defaultOpen = true, foldKey, tag = "h3", actions, className = "", children }) {
+  const [open, setOpen] = useFoldState(foldKey, defaultOpen);
   const id = useId();
   const H = tag;
   const head = (

@@ -188,12 +188,12 @@ test("past reservations: admin may cancel (gated, audited, unpaid charge voided)
   assert.equal(a.reason, "geçmiş kayıt hatalı");
   const ch = (await t.db.execute({ sql: "SELECT voided_at FROM charges WHERE reservation_id = ?", args: [id] })).rows[0];
   assert.ok(ch.voided_at > 0);
-  // paid charge stays when the past booking is cancelled
+  // a paid charge is voided too when the past booking is cancelled (ADR 0001 #1)
   const id2 = await mk(t.member);
   const rc = (await t.db.execute({ sql: "INSERT INTO receipts (user_id, month, sha256, status, uploaded_at) VALUES (?,?,?, 'ok', 1)", args: [t.member.id, currentMonth(), `past-${id2}`] }));
   await t.db.execute({ sql: "INSERT INTO charges (user_id, month, kind, amount_try, reservation_id, paid_receipt_id, paid_by) VALUES (?,?, 'booking', 100, ?, ?, 'admin')", args: [t.member.id, currentMonth(), id2, Number(rc.lastInsertRowid)] });
   assert.equal((await del(id2, t.admin, ok)).status, 200);
-  assert.equal((await t.db.execute({ sql: "SELECT voided_at FROM charges WHERE reservation_id = ?", args: [id2] })).rows[0].voided_at, null);
+  assert.equal((await t.db.execute({ sql: "SELECT voided_at FROM charges WHERE reservation_id = ?", args: [id2] })).rows[0].voided_at > 0, true);
 });
 
 test("back-filling past hours: booked + charged in that month, overlap/limit enforced, no joined_month limit, only admin cancels", async () => {

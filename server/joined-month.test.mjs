@@ -42,3 +42,17 @@ test("PATCH /users/:id joined_month: admin only, validated; earlier materialises
   const keep = await J(await t.fetch(`/api/users/${u.id}`, { method: "PATCH", as: t.admin, body: { name: "Yeni Ad" } }));
   assert.equal(keep.joined_month, M);
 });
+
+test("billing read back-fills every missing past month in one batch, each at the fee in force for that month", async () => {
+  const u = await mk("Toplu");
+  const P3 = prev(M, 3), P1 = prev(M, 1);
+  await t.db.execute({ sql: "INSERT INTO fees (effective_from, subscription_try, booking_try) VALUES (?, 750, 100)", args: [P1] });
+  assert.equal((await t.fetch(`/api/users/${u.id}`, { method: "PATCH", as: t.admin, body: { joined_month: P3 } })).status, 200);
+  await bill(u, P3);
+  const subs = (await t.db.execute({ sql: "SELECT month, amount_try FROM charges WHERE user_id = ? AND kind = 'subscription' ORDER BY month", args: [u.id] })).rows;
+  assert.deepEqual(subs.map((r) => r.month), [P3, prev(M, 2), P1, M]);
+  const old = (await t.db.execute({ sql: "SELECT subscription_try s FROM fees WHERE effective_from <= ? ORDER BY effective_from DESC, id DESC LIMIT 1", args: [prev(M, 2)] })).rows[0].s;
+  assert.deepEqual(subs.map((r) => r.amount_try), [old, old, 750, 750]);
+  await bill(u, P1); // idempotent: a second read adds nothing
+  assert.equal(await nCharges(u), 4);
+});

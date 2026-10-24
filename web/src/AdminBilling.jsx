@@ -1,12 +1,15 @@
+import useFoldState, { foldGet, foldSet } from "./useFoldState.js";
 import React, { useEffect, useId, useRef, useState } from "react";
 import usePoll from "./usePoll.js";
+import useMonth from "./useMonth.js";
+import { kvGet, kvSet } from "./nav.js";
 import { api, apiUpload } from "./api.js";
 import { tr } from "./tr.js";
 import { ChevronLeftIcon } from "./icons.jsx";
 import Sheet from "./Sheet.jsx";
 import { ConfirmSheet, MonthPicker, Select } from "./Controls.jsx";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
-import { CheckG, CreditCard, CreditCover, DashG, DebtCard, ItemList, KalanCard, MonthNav, DeleteReceipt, PaySummary, StatusPill, UploadG, chargeName, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
+import { CheckG, CreditCard, CreditCover, CreditPay, DashG, DebtCard, ItemList, KalanCard, ReceiptItems, MonthNav, DeleteReceipt, PaySummary, StatusPill, UploadG, chargeName, fmtTRY, itemTitle, monthLabel, nowMonth } from "./Billing.jsx";
 
 const A = tr.admin;
 const fmtDateTimeShort = (ms) => new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Europe/Istanbul" }).format(ms);
@@ -226,7 +229,7 @@ function PendingReceiptCard({ r, items: given, elsewhere: givenElse, onReview, o
  * PDF only if there is one. The undo (reject) is tucked away in a disclosure. Rejected/undone ones render muted.
  */
 function ReceiptCard({ r, onReview, onDelete, showUser = true, items, elsewhere, say, foldable }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useFoldState(foldable ? "admin.receipt." + r.id : null, false);
   if (r.status === "pending") return <PendingReceiptCard r={r} items={items} elsewhere={elsewhere} onReview={onReview} onDelete={onDelete} showUser={showUser} say={say} />;
   const ok = r.status === "ok";
   const picked = r.charges.filter((c) => c.selected !== false);
@@ -234,26 +237,14 @@ function ReceiptCard({ r, onReview, onDelete, showUser = true, items, elsewhere,
   return (
     <li className={"card pay-card a-rcpt " + (ok ? "saved" : "draft")}>
       <div className="pay-head">
-        {foldable ? <button type="button" className="fold-toggle" aria-expanded={open} onClick={() => setOpen(!open)}><Chev open={open} /><b>{monthLabel(r.month)}</b>{!open && <small>{fmtTRY(r.paid_try ?? r.expected_try ?? 0)}</small>}</button>
+        {foldable ? <button type="button" className="fold-toggle" aria-expanded={open} onClick={() => setOpen(!open)}><Chev open={open} /><b>{monthLabel(r.month)}</b><small>{fmtTRY(r.paid_try ?? r.expected_try ?? 0)}</small></button>
           : <span><b>{showUser ? r.user_name : monthLabel(r.month)}</b>{showUser && <span className="muted small"> · {monthLabel(r.month)}</span>}</span>}
         {ok ? <span className="pill ok"><CheckG />{P.savedPill}</span> : <StatusPill flag={r.status} />}
       </div>
       <div hidden={foldable && !open}>
       <div className="muted small">{fmtDateTimeShort(r.uploaded_at)}{r.bank_ref ? ` · ${A.bankRef}: ${r.bank_ref}` : ""}</div>
       {!ok && <p className="rcpt-msg">{r.message}</p>}
-      {picked.length > 0 && (
-        <div className="pay-items">
-          <div className="pay-legend">{P.coversSaved}</div>
-          <ul className="pay-covered">
-            {picked.map((c) => (
-              <li key={c.id}>
-                <span>{chargeName(c)}{c.month && c.month !== r.month && <span className="muted small"> · {monthLabel(c.month)}</span>}</span>
-                <span className="amount">{fmtTRY(c.amount_try)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <ReceiptItems r={r} picked={picked} foldKey={"admin.receipt." + r.id + ".items"} />
       {ok && <PaySummary saved count={picked.length} sum={r.expected_try} paid={r.cash_try ?? r.paid_try} credit={r.credit_try ?? 0} spill={r.spill_try} owed={r.overpaid_try} />}
       {adminNote && <p className="rcpt-msg">{adminNote}</p>}
       {r.has_pdf && <PdfToggle src={`/api/receipts/${r.id}/pdf`} title={r.filename} />}
@@ -273,7 +264,25 @@ const O = A.overview;
  * `debt_try` every month up to now (unpaid items stay in their own month - nothing rolls forward), both computed
  * server-side by GET /admin/billing/overview so the totals are one SQL SUM, not N requests.
  */
-function Outstanding({ data, onDetail }) {
+/** Per-row "Alacaktan öde (X TL)" in the overview (ADR 0001 #4): a sibling of the row button (no nested buttons). */
+function RowCreditPay({ u, onPaid }) {
+  const [busy, setBusy] = useState(false);
+  if (!(u.credit_try > 0 && u.debt_try > 0)) return null;
+  const amt = fmtTRY(Math.min(u.credit_try, u.debt_try));
+  const run = async () => {
+    setBusy(true);
+    try { const r = await api("POST", `/admin/users/${u.id}/credit/pay`); onPaid(tr.billing.creditPay.done(fmtTRY(r.paid_try))); }
+    catch (e) { onPaid(e.message || tr.err.generic); } finally { setBusy(false); }
+  };
+  return (
+    <div className="owe-credit">
+      <span className="muted small">{tr.billing.creditPay.hintAdmin(fmtTRY(u.credit_try), fmtTRY(u.debt_try))}</span>
+      <button type="button" className="btn sm" disabled={busy} aria-busy={busy || undefined} onClick={run}>{tr.billing.creditPay.button(amt)}</button>
+    </div>
+  );
+}
+
+function Outstanding({ data, onDetail, onPaid }) {
   const clear = data.total_debt_try === 0;
   return (
     <>
@@ -289,16 +298,17 @@ function Outstanding({ data, onDetail }) {
         <p className="owe-note">{clear ? O.allClear : O.owing(data.owing_count, data.users.length)}</p>
       </section>
       {!data.users.length ? <EmptyState title={O.empty[0]} body={O.empty[1]} /> : (
-        <Collapse defaultOpen={false} title={<span>{O.membersTitle}<span className="muted small"> · {O.membersCount(data.users.length)}</span></span>}>
+        <Collapse foldKey="admin.overview.members" defaultOpen={false} title={<span>{O.membersTitle}<span className="muted small"> · {O.membersCount(data.users.length)}</span></span>}>
         <ul className="card owe-list" aria-label={O.title}>
           <li className="owe-head" aria-hidden="true"><span>{O.member}</span><span>{O.thisMonth}</span><span>{O.debt}</span></li>
           {data.users.map((u) => (
             <li key={u.id}>
               <button type="button" className="owe-row" onClick={() => onDetail(u)} aria-label={O.open(u.name)}>
-                <span className="owe-name">{u.name}{!u.active && <span className="muted small"> · {O.inactive}</span>}</span>
+                <span className="owe-name">{u.name}{!u.active && <span className="muted small"> · {O.inactive}</span>}{!u.active && u.credit_try !== 0 && <span className="muted small"> · {O.credit(fmtTRY(u.credit_try))}</span>}</span>
                 <span className={"owe-amt amount" + (u.outstanding_try > 0 ? " owed" : "")}>{fmtTRY(u.outstanding_try)}</span>
                 <span className={"owe-amt amount" + (u.debt_try > 0 ? " owed" : "")}>{fmtTRY(u.debt_try)}</span>
               </button>
+              {onPaid && <RowCreditPay u={u} onPaid={onPaid} />}
             </li>
           ))}
           <li className="owe-total">
@@ -318,7 +328,8 @@ function Outstanding({ data, onDetail }) {
  * overview above lists everyone. A row click hands the member to the per-user drill-down (UserDetail) upstairs.
  */
 export function Payments({ onDetail }) {
-  const [month, setMonth] = useState(nowMonth());
+  const [month, setMonth] = useState(() => { const m = kvGet("month.payments"); return m && /^\d{4}-\d{2}$/.test(m) ? m : nowMonth(); });
+  useEffect(() => { kvSet("month.payments", month); }, [month]);
   const [f, setF] = useState({ user_id: "", status: "" });
   const [allMonths, setAllMonths] = useState(false);
   const [ov, setOv] = useState(null);
@@ -329,9 +340,11 @@ export function Payments({ onDetail }) {
   useEffect(() => { api("GET", "/users").then(setUsers, () => {}); }, []);
 
   const [loadErr, setLoadErr] = useState("");
+  const ovFor = useRef(month); // keep the old table while a month switch loads; drop answers for a month no longer wanted
   const loadOv = () => {
-    setOvErr(""); setOv(null);
-    api("GET", `/admin/billing/overview?month=${month}`).then(setOv, (e) => setOvErr(e.message || tr.err.load));
+    setOvErr(""); ovFor.current = month;
+    const m = month;
+    api("GET", `/admin/billing/overview?month=${m}`).then((d) => { if (ovFor.current === m) setOv(d); }, (e) => { if (ovFor.current === m) setOvErr(e.message || tr.err.load); });
   };
   useEffect(loadOv, [month]); // eslint-disable-line react-hooks/exhaustive-deps
   const load = () => {
@@ -373,9 +386,9 @@ export function Payments({ onDetail }) {
   return (
     <section>
       <div className="page-head"><h2>{O.title}</h2></div>
-      {ov && <MonthNav month={ov.month} months={ov.months} onChange={setMonth} />}
-      {!ov && (ovErr ? <ErrorState message={ovErr} onRetry={loadOv} /> : <Skeleton rows={3} />)}
-      {ov && <Outstanding data={ov} onDetail={onDetail} />}
+      {ov && <MonthNav month={month} months={ov.months} onChange={setMonth} />}
+      {ovErr ? <ErrorState message={ovErr} onRetry={loadOv} /> : !ov && <Skeleton rows={3} />}
+      {ov && !ovErr && <div className={ov.month !== month ? "month-loading" : undefined} aria-busy={ov.month !== month || undefined}><Outstanding data={ov} onDetail={onDetail} onPaid={(m) => { say(m); loadOv(); }} /></div>}
 
       <h3 className="sec-title">{A.receiptsTitle}</h3>
       <div className="filters">
@@ -390,13 +403,13 @@ export function Payments({ onDetail }) {
       {!list && (loadErr ? <ErrorState message={loadErr} onRetry={load} /> : <Skeleton rows={3} />)}
       {list && !list.length && <EmptyState title={tr.empty.receipts[0]} body={tr.empty.receipts[1]} />}
       {groups.map((g) => (
-        <Collapse key={"u" + g.user_id} defaultOpen={false} title={<span>{g.name}<span className="muted small"> · {A.newReceipts(g.rows.length)}</span></span>}>
+        <Collapse key={"u" + g.user_id} foldKey={"admin.payments.new." + g.user_id} defaultOpen={false} title={<span>{g.name}<span className="muted small"> · {A.newReceipts(g.rows.length)}</span></span>}>
           <ul className="list">{g.rows.map((r) => <ReceiptCard key={r.id} r={r} showUser={false} onReview={review} onDelete={del} say={say} />)}</ul>
         </Collapse>
       ))}
       {done.length > 0 && <h3 className="sec-title">{A.doneReceipts}<span className="muted small"> · {A.doneCount(done.length)}</span></h3>}
       {doneGroups.map((g) => (
-        <Collapse key={"d" + g.user_id} defaultOpen={false} title={<span>{g.name}<span className="muted small"> · {A.doneCount(g.rows.length)}{g.sum > 0 ? " · " + fmtTRY(g.sum) : ""}</span></span>}>
+        <Collapse key={"d" + g.user_id} foldKey={"admin.payments.done." + g.user_id} defaultOpen={false} title={<span>{g.name}<span className="muted small"> · {A.doneCount(g.rows.length)}{g.sum > 0 ? " · " + fmtTRY(g.sum) : ""}</span></span>}>
           <ul className="list">{g.rows.map((r) => <ReceiptCard key={r.id} r={r} showUser={false} foldable onReview={review} onDelete={del} say={say} />)}</ul>
         </Collapse>
       ))}
@@ -436,8 +449,9 @@ function Chev({ open }) {
 }
 
 /** Section with a chevron header. Children stay mounted when collapsed (`hidden`), so a typed draft survives. */
-function Collapse({ title, defaultOpen = true, children }) {
-  const [open, setOpen] = useState(defaultOpen);
+/** foldKey: stable key remembered in localStorage (see useFoldState.js); include item ids for per-item folds. */
+function Collapse({ title, defaultOpen = true, foldKey, children }) {
+  const [open, setOpen] = useFoldState(foldKey, defaultOpen);
   const id = useId();
   return (
     <section className="fold">
@@ -473,15 +487,15 @@ const ConfirmGate = ({ text, label, onYes, onNo }) => <ConfirmSheet title={tr.me
 
 /** Per-user payments + reservations (admin). */
 export function UserDetail({ user, onBack, backLabel }) {
-  const [data, setData] = useState(null);
+  const { data, setData, load: loadMonth, dim, shown, fresh } = useMonth((month) => api("GET", `/admin/users/${user.id}/billing${month ? `?month=${month}` : ""}`), "month.userDetail");
   const [res, setRes] = useState(null);
   const [adj, setAdj] = useState({ amount: "", label: "" });
   const [say, toast] = useToast();
   const [loadErr, setLoadErr] = useState("");
   const load = (month) => {
     setLoadErr("");
-    return api("GET", `/admin/users/${user.id}/billing${month ? `?month=${month}` : ""}`).then(
-      (d) => setData(d),
+    return loadMonth(month).then(
+      () => {},
       (e) => { setLoadErr(e.message || tr.err.load); say(e.message); },
     );
   };
@@ -489,9 +503,9 @@ export function UserDetail({ user, onBack, backLabel }) {
   usePoll((ok) => Promise.all([
     api("GET", `/admin/users/${user.id}/billing${data?.month ? `?month=${data.month}` : ""}`),
     api("GET", `/admin/users/${user.id}/reservations`),
-  ]).then(([d, r]) => { if (ok()) { setData(d); setRes(r); } }, (e) => { if (e.status === 404 && ok()) onBack(); }));
+  ]).then(([d, r]) => { if (ok()) { if (fresh(d)) setData(d); setRes(r); } }, (e) => { if (e.status === 404 && ok()) onBack(); }));
 
-  const waive = async (it, waived) => { try { await api("POST", `/admin/charges/${it.id}/waive`, { waived }); say(waived ? A.waived : A.unwaive); load(data.month); } catch (e) { say(e.message); } };
+  const waive = async (it, waived, mode) => { try { await api("POST", `/admin/charges/${it.id}/waive`, { waived, mode }); say(waived ? A.waived : A.unwaive); load(data.month); } catch (e) { say(e.message); } };
   const del = async (r) => {
     try { await api("DELETE", `/admin/receipts/${r.id}`); say(A.receiptDeleted); await load(data.month); }
     catch (e) { say(e.message || tr.err.generic); }
@@ -501,11 +515,16 @@ export function UserDetail({ user, onBack, backLabel }) {
     catch (e) { say(e.message); return false; }
   };
   const [settle, setSettle] = useState({ amount: "", note: "" });
-  const settleCredit = async (e) => {
-    e.preventDefault();
+  const [forfeitAsk, setForfeitAsk] = useState(false);
+  const payFromCredit = async () => {
+    try { const r = await api("POST", `/admin/users/${user.id}/credit/pay`); say(tr.billing.creditPay.done(fmtTRY(r.paid_try))); await load(data.month); }
+    catch (err) { say(err.message || tr.err.generic); }
+  };
+  // kind: 'refund' ("Geri ödendi") | 'forfeit' ("Alacağı sil", confirmed first: no undo)
+  const settleCredit = async (kind) => {
     try {
-      await api("POST", `/admin/users/${user.id}/credit/settle`, { amount_try: settle.amount === "" ? undefined : Number(settle.amount), note: settle.note });
-      setSettle({ amount: "", note: "" }); say(A.credit.settled); load(data.month);
+      await api("POST", `/admin/users/${user.id}/credit/settle`, { amount_try: settle.amount === "" ? undefined : Number(settle.amount), note: settle.note, kind });
+      setSettle({ amount: "", note: "" }); say(kind === "forfeit" ? A.credit.forfeited : A.credit.refunded); load(data.month);
     } catch (err) { say(err.message); }
   };
   const addAdj = async (e) => {
@@ -517,7 +536,7 @@ export function UserDetail({ user, onBack, backLabel }) {
   };
 
   return (
-    <section>
+    <section className={dim ? "month-loading" : undefined} aria-busy={dim || undefined}>
       <div className="detail-head">
         <button className="icon-btn" onClick={onBack} aria-label={backLabel || A.back}><ChevronLeftIcon /></button>
         <h2>{user.name}</h2>
@@ -525,30 +544,41 @@ export function UserDetail({ user, onBack, backLabel }) {
       {!data && (loadErr ? <ErrorState message={loadErr} onRetry={() => load()} /> : <Skeleton rows={3} />)}
       {data && (
         <>
-          <MonthNav month={data.month} months={data.months} onChange={load} />
+          <MonthNav month={shown} months={data.months} onChange={load} />
           <KalanCard data={data} />
           {data.debt_try > 0 && (data.debt_months ?? []).some((m) => m.month !== data.month) && (
-            <Collapse title={tr.billing.debt.titleAdmin} defaultOpen={false}><DebtCard data={data} onPick={load} admin /></Collapse>
+            <Collapse foldKey={"admin.user." + user.id + ".debt"} title={tr.billing.debt.titleAdmin} defaultOpen={false}><DebtCard data={data} onPick={load} admin /></Collapse>
           )}
+          <CreditPay creditTry={data.credit.balance_try} debtTry={data.debt_try} onPay={payFromCredit} admin />
           <CreditCover cover={data.credit_cover} admin />
           {data.credit.balance_try > 0 && (
             <CreditCard credit={data.credit} admin>
-              <form className="form-row" onSubmit={settleCredit}>
+              <form className="form-row settle-form" onSubmit={(e) => { e.preventDefault(); settleCredit("refund"); }}>
                 <label className="field"><span>{A.credit.amountLabel}</span><input type="number" min="1" max={data.credit.balance_try} step="1" value={settle.amount} onChange={(e) => setSettle({ ...settle, amount: e.target.value })} /></label>
                 <label className="field"><span>{A.notePh}</span><input maxLength={200} placeholder={A.credit.notePh} value={settle.note} onChange={(e) => setSettle({ ...settle, note: e.target.value })} /></label>
-                <button className="btn primary">{A.credit.settle}</button>
+                <button className="btn primary">{A.credit.refund}</button>
+                <button type="button" className="btn danger" onClick={() => setForfeitAsk(true)}>{A.credit.forfeit}</button>
               </form>
             </CreditCard>
           )}
+          {forfeitAsk && (
+            <ConfirmSheet title={A.credit.forfeitTitle} body={A.credit.forfeitBody(fmtTRY(settle.amount === "" ? data.credit.balance_try : Number(settle.amount)))}
+              confirmLabel={A.credit.forfeit} danger onClose={() => setForfeitAsk(false)} onConfirm={() => { setForfeitAsk(false); settleCredit("forfeit"); }} />
+          )}
           {data.credit.settlements.length > 0 && (
             <ul className="card plain-list" aria-label={A.credit.history}>
-              {data.credit.settlements.map((x) => <li key={x.id}><span>{fmtDateTimeShort(x.created_at)}{x.note ? ` · ${x.note}` : ""}</span><span className="num">{fmtTRY(x.amount_try)}</span></li>)}
+              {data.credit.settlements.map((x) => <li key={x.id}><span>{fmtDateTimeShort(x.created_at)} · {A.credit.kind[x.kind] ?? A.credit.kind.refund}{x.note ? ` · ${x.note}` : ""}</span><span className="num">{fmtTRY(x.amount_try)}</span></li>)}
             </ul>
           )}
           {/* read-only item list (waive/unwaive only) - WHAT a payment covers is picked inside the payment form below */}
-          <Collapse title={A.waive} defaultOpen={false}>
+          <Collapse foldKey={"admin.user." + user.id + ".waive"} title={A.waive} defaultOpen={false}>
+          {data.items.some((it) => it.status === "unpaid" && it.paid_try > 0) && <p className="hint">{A.waiveRest}: {A.waiveRestTip} {A.waiveAll}: {A.waiveAllTip}</p>}
           <ItemList items={data.items} empty={data.future ? tr.billing.futureEmptyAdmin : undefined} extra={(it) =>
-            it.status === "unpaid" ? <button className="btn sm ghost" onClick={() => waive(it, true)}>{A.waive}</button>
+            it.status === "unpaid" && it.paid_try > 0 ? <>
+              <button className="btn sm ghost" onClick={() => waive(it, true, "rest")}>{A.waiveRest}</button>
+              <button className="btn sm ghost" onClick={() => waive(it, true, "all")}>{A.waiveAll}</button>
+            </>
+              : it.status === "unpaid" ? <button className="btn sm ghost" onClick={() => waive(it, true)}>{A.waive}</button>
               : it.status === "waived" ? <button className="btn sm ghost" onClick={() => waive(it, false)}>{A.unwaive}</button> : null} />
           </Collapse>
           {/* order matters (user request 2026-09-23): add an extra charge first, then record the payment that covers it */}
@@ -561,7 +591,7 @@ export function UserDetail({ user, onBack, backLabel }) {
             <div className="row end"><button className="btn primary" disabled={!adj.amount || !adj.label.trim()}>{A.adjustAdd}</button></div>
           </form>
           <RecordPayment userId={user.id} month={data.month} items={data.items} elsewhere={data.other_open} credit={data.credit.balance_try} say={say} onSaved={() => load(data.month)} />
-          <Collapse title={A.payments}>
+          <Collapse foldKey={"admin.user." + user.id + ".receipts"} title={A.payments} defaultOpen={false}>
           {!data.receipts.length && <EmptyState title={tr.empty.receipts[0]} body={tr.empty.receipts[1]} />}
           <ul className="list">{data.receipts.map((r) => (
             <ReceiptCard key={r.id} r={r} onReview={review} onDelete={del} showUser={false} say={say} foldable
@@ -570,7 +600,7 @@ export function UserDetail({ user, onBack, backLabel }) {
           </Collapse>
         </>
       )}
-      <Collapse title={A.reservations} defaultOpen={false}>
+      <Collapse foldKey={"admin.user." + user.id + ".reservations"} title={A.reservations} defaultOpen={false}>
       {res && !res.length && <EmptyState title={tr.empty.reservations[0]} body={tr.empty.reservations[1]} />}
       {res && res.length > 0 && (
         <ul className="card plain-list">
@@ -587,7 +617,7 @@ export function UserDetail({ user, onBack, backLabel }) {
         </ul>
       )}
       </Collapse>
-      <Collapse title={tr.members.settings} defaultOpen={false}>
+      <Collapse foldKey={"admin.user." + user.id + ".settings"} title={tr.members.settings} defaultOpen={false}>
         <BillingStart user={user} say={say} onChanged={() => load(data?.month)} />
       </Collapse>
       {toast}
@@ -601,18 +631,22 @@ export function Fees() {
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState(() => new Set()); // months ticked for a bulk edit
   const [bulk, setBulk] = useState(null); // { subscription_try, booking_try } while the bulk sheet is open; blank = keep each month's own value
-  const [openYears, setOpenYears] = useState(() => new Set()); // every year collapsed by default
+  const [, bump] = useState(0); // years collapsed by default, state lives in useFoldState storage
   const [say, toast] = useToast();
   const [loadErr, setLoadErr] = useState("");
-  const loadFees = () => { setLoadErr(""); api("GET", "/admin/fees").then(setFees, (e) => setLoadErr(e.message || tr.err.load)); };
+  const [reviews, setReviews] = useState([]); // open fee reviews (ADR 0001 #9)
+  const [showRv, setShowRv] = useState(false);
+  const loadReviews = () => api("GET", "/admin/fee-reviews").then((r) => { setReviews(r); return r; }, () => []);
+  const loadFees = () => { setLoadErr(""); api("GET", "/admin/fees").then(setFees, (e) => setLoadErr(e.message || tr.err.load)); loadReviews(); };
   useEffect(loadFees, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const afterSave = async (n) => { if (n > 0 && (await loadReviews()).length) setShowRv(true); };
   const now = nowMonth();
   const feeOf = (m) => fees?.find((x) => x.effective_from <= m); // fees is newest-first: first row <= m is the one in force
   const cur = feeOf(now);
   const months = []; // 2025-01 .. current+12, newest first
   if (fees) { let m = now; for (let i = 0; i < 12; i++) m = nextOf(m); for (; m >= "2025-01"; m = prevOf(m)) months.push(m); }
   const years = [...new Set(months.map((m) => m.slice(0, 4)))];
-  const toggleYear = (y) => setOpenYears((s) => { const n = new Set(s); n.has(y) ? n.delete(y) : n.add(y); return n; });
+  const toggleYear = (y) => { foldSet("admin.fees.year." + y, !foldGet("admin.fees.year." + y)); bump((n) => n + 1); };
   const pick = (m) => { const f = feeOf(m); if (f) setForm({ effective_from: m, subscription_try: f.subscription_try, booking_try: f.booking_try }); };
   const openFor = (m) => { const f = feeOf(m); setForm({ effective_from: m, subscription_try: f ? f.subscription_try : "", booking_try: f ? f.booking_try : "" }); setOpen(true); };
   const save = async (e) => {
@@ -621,14 +655,15 @@ export function Fees() {
       const res = await api("POST", "/admin/fees", { effective_from: form.effective_from, subscription_try: Number(form.subscription_try), booking_try: Number(form.booking_try) });
       setFees(res.fees);
       setOpen(false);
-      say(res.repriced ? `${A.feesRepriced} ${res.repriced}` : A.feesSaved);
+      say(res.reviews ? A.feesReviewsSaved(res.reviews) : A.feesSaved);
+      afterSave(res.reviews);
     } catch (err) { say(err.message); }
   };
   const togglePick = (m) => setPicked((p) => { const n = new Set(p); n.has(m) ? n.delete(m) : n.add(m); return n; });
   const saveBulk = async (e) => {
     e.preventDefault();
     const list = [...picked].sort(); // oldest first
-    let done = 0, repriced = 0;
+    let done = 0, reviewed = 0;
     try {
       for (const m of list) {
         const f = feeOf(m);
@@ -636,16 +671,24 @@ export function Fees() {
         const book = bulk.booking_try === "" ? f?.booking_try : Number(bulk.booking_try);
         if (sub == null || book == null) throw new Error(`${monthLabel(m)}: ${A.feesBulkNeed}`);
         const res = await api("POST", "/admin/fees", { effective_from: m, subscription_try: sub, booking_try: book });
-        setFees(res.fees); repriced += res.repriced || 0; done++;
+        setFees(res.fees); reviewed += res.reviews || 0; done++;
       }
       setBulk(null); setPicked(new Set());
-      say(`${A.feesBulkDone(done)}${repriced ? ` · ${A.feesRepriced} ${repriced}` : ""}`);
+      say(`${A.feesBulkDone(done)}${reviewed ? ` · ${A.rv.pending(reviewed)}` : ""}`);
+      afterSave(reviewed);
     } catch (err) { loadFees(); say(done ? `${A.feesBulkPartial(done, list.length)} ${err.message}` : err.message); }
   };
   return (
     <section>
       <div className="page-head"><h2>{A.feesTitle}</h2>{fees && <button type="button" className="btn primary" onClick={() => openFor(nextOf(now))}>{A.feesNew}</button>}</div>
       {!fees && (loadErr ? <ErrorState message={loadErr} onRetry={loadFees} /> : <Skeleton rows={1} />)}
+      {reviews.length > 0 && (
+        <div className="card fee-bulk fee-rv-note" role="status">
+          <b>{A.rv.pending(reviews.length)}</b>
+          <button type="button" className="btn primary" onClick={() => setShowRv(true)}>{A.rv.open}</button>
+        </div>
+      )}
+      {showRv && <FeeReviews rows={reviews} onChange={setReviews} onClose={() => setShowRv(false)} />}
       {open && (
         <Sheet title={A.feesNew} onClose={() => setOpen(false)}>
           <form className="form" onSubmit={save}>
@@ -695,7 +738,7 @@ export function Fees() {
             {years.map((y) => {
               const ms = months.filter((m) => m.startsWith(y));
               const n = ms.filter((m) => picked.has(m)).length;
-              const isOpen = openYears.has(y);
+              const isOpen = !!foldGet("admin.fees.year." + y);
               return [
                 <li key={y} className="fee-year">
                   <label className="check"><input type="checkbox" aria-label={y} checked={n === ms.length} ref={(el) => { if (el) el.indeterminate = n > 0 && n < ms.length; }} onChange={(e) => setPicked((p) => { const s = new Set(p); ms.forEach((m) => e.target.checked ? s.add(m) : s.delete(m)); return s; })} /></label>
@@ -718,6 +761,73 @@ export function Fees() {
       )}
       {toast}
     </section>
+  );
+}
+
+/** ADR 0001 #9 "Etkilenen kalemler": per-item decision after a fee change. "Tümüne uygula" / "Hiçbirine" act on every
+ *  open row; ticks only feed "Seçilenlere uygula". Resolved rows move to "Çözüldü" (this sheet session only). */
+function FeeReviews({ rows, onChange, onClose }) {
+  const R = A.rv;
+  const [picked, setPicked] = useState(() => new Set());
+  const [done, setDone] = useState([]); // [{ row, decision }]
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const resolve = async (list, decision) => {
+    if (!list.length) return;
+    setBusy(true); setErr("");
+    try {
+      const res = await api("POST", "/admin/fee-reviews/resolve", { ids: list.map((r) => r.id), decision });
+      setDone((d) => [...list.map((row) => ({ row, decision })), ...d]);
+      setPicked((p) => { const n = new Set(p); list.forEach((r) => n.delete(r.id)); return n; });
+      onChange(res.open);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const what = (r) => `${r.kind === "subscription" ? `${tr.billing.subscription} · ${monthLabel(r.month)}` : `${tr.billing.booking} · ${r.start_ms ? fmtDateTimeShort(r.start_ms) : monthLabel(r.month)}`}`;
+  const effect = (r) => (r.credit_try > 0 ? R.credit(fmtTRY(r.credit_try)) : r.status === "paid" && r.debt_try > 0 ? R.debt(fmtTRY(r.debt_try)) : R.rest);
+  const toggle = (id) => setPicked((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const sel = rows.filter((r) => picked.has(r.id));
+  const line = (r) => (
+    <div className="rv-main">
+      <b>{r.user_name}</b> <span className="muted">· {what(r)}{r.status === "paid" ? ` · ${R.paid}` : ""}</span>
+      <div className="num"><s>{fmtTRY(r.old_try)}</s> → <b>{fmtTRY(r.new_try)}</b> <span className="rv-effect">{effect(r)}</span></div>
+    </div>
+  );
+  return (
+    <Sheet wide title={R.title} onClose={onClose}>
+      <p className="hint">{R.hint}</p>
+      {err && <p className="notice bad" role="alert">{err}</p>}
+      {rows.length === 0 ? <p className="muted">{R.none}</p> : (
+        <ul className="plain-list rv-list">
+          {rows.map((r) => (
+            <li key={r.id} className="rv-row">
+              <label className="check"><input type="checkbox" aria-label={`${r.user_name} · ${what(r)}`} checked={picked.has(r.id)} onChange={() => toggle(r.id)} /></label>
+              {line(r)}
+              <div className="rv-acts">
+                <button type="button" className="btn sm" disabled={busy} onClick={() => resolve([r], "keep")}>{R.keep}</button>
+                <button type="button" className="btn sm primary" disabled={busy} onClick={() => resolve([r], "apply")}>{R.apply}</button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {rows.length > 0 && (
+        <div className="row end rv-bulk">
+          {sel.length > 0 && <button type="button" className="btn" disabled={busy} onClick={() => resolve(sel, "apply")}>{R.applyPicked(sel.length)}</button>}
+          <button type="button" className="btn" disabled={busy} onClick={() => resolve(rows, "keep")}>{R.keepAll}</button>
+          <button type="button" className="btn primary" disabled={busy} onClick={() => resolve(rows, "apply")}>{R.applyAll}</button>
+        </div>
+      )}
+      {done.length > 0 && (
+        <>
+          <h3 className="sec-title">{R.done}</h3>
+          <ul className="plain-list rv-list rv-done">
+            {done.map(({ row, decision }) => (
+              <li key={row.id} className="rv-row">{line(row)}<span className={"pill" + (decision === "apply" ? " ok" : "")}>{decision === "apply" ? R.applied : R.kept}</span></li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Sheet>
   );
 }
 

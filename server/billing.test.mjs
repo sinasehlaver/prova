@@ -70,7 +70,7 @@ test("charge snapshot survives a fee change; fees apply from a future month only
   assert.equal((await t.db.execute({ sql: "SELECT COUNT(*) n FROM fees WHERE effective_from = ?", args: [NEXT] })).rows[0].n, 1);
 });
 
-test("setFee any month: re-prices only UNPAID charges, other months untouched", async () => {
+test("setFee any month: no silent re-price, affected items get reviews, other months untouched", async () => {
   const u = await mk("Reprice"), p = await mk("RepricePaid"), w = await mk("RepriceWaived");
   for (const x of [u, p, w]) await ensureMonth(t.db, x, M);
   const sid = async (x) => (sub(await bill(x))).id;
@@ -79,10 +79,12 @@ test("setFee any month: re-prices only UNPAID charges, other months untouched", 
   const prevFee = await feeFor(t.db, M), nextFee = await feeFor(t.db, NEXT);
   const r = await admin("/fees", { method: "POST", body: { effective_from: M, subscription_try: 1800, booking_try: 700 } });
   assert.equal(r.status, 201);
-  assert.ok((await J(r)).repriced >= 1);
-  assert.equal(sub(await bill(u)).amount_try, 1800); // unpaid -> new fee
-  assert.equal(sub(await bill(p)).amount_try, 1500); // paid stays
-  assert.equal(sub(await bill(w)).amount_try, 1500); // waived stays
+  assert.ok((await J(r)).reviews >= 2);
+  for (const x of [u, p, w]) assert.equal(sub(await bill(x)).amount_try, 1500); // nothing re-priced until the admin decides
+  const open = await J(await admin("/fee-reviews"));
+  const ids = new Set(open.map((o) => o.charge_id));
+  assert.ok(ids.has(await sid(u)) && ids.has(await sid(p))); // paid items are reviewed too
+  assert.ok(!ids.has(await sid(w))); // waived: out of scope
   assert.equal((await feeFor(t.db, M)).subscription_try, 1800);
   assert.equal((await feeFor(t.db, NEXT)).subscription_try, nextFee.subscription_try); // following month unchanged
   assert.equal((await feeFor(t.db, NEXT)).booking_try, nextFee.booking_try);
@@ -91,20 +93,22 @@ test("setFee any month: re-prices only UNPAID charges, other months untouched", 
   assert.equal((await admin("/fees", { method: "POST", body: { effective_from: PAST, subscription_try: 900, booking_try: 100 } })).status, 201);
   assert.equal((await feeFor(t.db, PAST)).subscription_try, 900);
   assert.equal((await feeFor(t.db, nextMonth(PAST))).subscription_try, 1500);
-  // booking charge re-priced = people x new fee
+  // booking review target = people x new fee
   const bk = await mk("RepriceBook");
   const start = day(20);
   const rv = await t.fetch("/api/reservations", { as: bk, method: "POST", body: { start_ms: start, hours: 2, people: 3 } });
   assert.equal(rv.status, 201);
   const bm = (await t.db.execute({ sql: "SELECT month FROM charges WHERE user_id = ? AND kind = 'booking'", args: [bk.id] })).rows[0].month;
   await admin("/fees", { method: "POST", body: { effective_from: bm, subscription_try: 1500, booking_try: 150 } });
-  assert.equal((await t.db.execute({ sql: "SELECT amount_try a FROM charges WHERE user_id = ? AND kind = 'booking'", args: [bk.id] })).rows[0].a, 450);
+  const br = (await J(await admin("/fee-reviews"))).find((o) => o.user_id === bk.id);
+  assert.equal(br.new_try, 450);
+  assert.equal(br.old_try, 1500);
   // restore for later tests
   await admin("/fees", { method: "POST", body: { effective_from: M, subscription_try: prevFee.subscription_try, booking_try: prevFee.booking_try } });
   await admin("/fees", { method: "POST", body: { effective_from: bm, subscription_try: prevFee.subscription_try, booking_try: prevFee.booking_try } });
 });
 
-test("fee changed after payment, then dekont deleted: subscription charge shows the NEW fee", async () => {
+test("fee changed after payment, then dekont deleted: the charge keeps its price, the review stays open", async () => {
   const u = await mk("FeeAfterPaid");
   await ensureMonth(t.db, u, M);
   const prevFee = await feeFor(t.db, M);
@@ -115,7 +119,10 @@ test("fee changed after payment, then dekont deleted: subscription charge shows 
   await admin("/fees", { method: "POST", body: { effective_from: M, subscription_try: 2100, booking_try: prevFee.booking_try } });
   assert.equal(sub(await bill(u)).amount_try, 1500); // paid: untouched
   assert.equal((await admin(`/receipts/${rid}`, { method: "DELETE" })).status, 200);
-  assert.equal(sub(await bill(u)).amount_try, 2100);
+  assert.equal(sub(await bill(u)).amount_try, 1500);
+  const rv = (await J(await admin("/fee-reviews"))).find((o) => o.charge_id === sid);
+  assert.equal(rv.new_try, 2100);
+  assert.equal(rv.status, "unpaid");
   await admin("/fees", { method: "POST", body: { effective_from: M, subscription_try: prevFee.subscription_try, booking_try: prevFee.booking_try } });
 });
 
@@ -156,12 +163,28 @@ test("booking charge: ONE charge on the booker = people x fee, voided on cancel,
   const va2 = await bill(a, month);
   assert.equal(va2.items.find((i) => i.kind === "booking").status, "voided");
   assert.equal(va2.kalan, month === M ? 1500 : 0);
-  // a PAID booking charge survives the cancel
+  // a PAID booking charge is voided too (ADR 0001 #1: the paid part becomes alacak)
   const r2 = await J(await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: day(3), hours: 1, people: 1 } }));
   const rcpt = (await t.db.execute({ sql: "INSERT INTO receipts (user_id, month, sha256, status, uploaded_at) VALUES (?,?,?,?,?)", args: [a.id, month, "x" + r2.id, "ok", 1] })).lastInsertRowid;
   await t.db.execute({ sql: "UPDATE charges SET paid_receipt_id = ?, paid_by = 'admin' WHERE reservation_id = ?", args: [rcpt, r2.id] });
   assert.equal((await t.fetch(`/api/reservations/${r2.id}`, { method: "DELETE", as: a })).status, 200);
-  assert.equal((await t.db.execute({ sql: "SELECT voided_at FROM charges WHERE reservation_id = ?", args: [r2.id] })).rows[0].voided_at, null);
+  assert.equal((await t.db.execute({ sql: "SELECT voided_at FROM charges WHERE reservation_id = ?", args: [r2.id] })).rows[0].voided_at > 0, true);
+});
+
+test("receipt charges carry the paid reservation (start/end/people) for booking items, own receipts only", async () => {
+  const a = await mk("Dekontlu");
+  const s = day(4);
+  const res = await J(await t.fetch("/api/reservations", { method: "POST", as: a, body: { start_ms: s, hours: 2, people: 2 } }));
+  const ch = (await t.db.execute({ sql: "SELECT id, month, amount_try FROM charges WHERE user_id = ? AND kind = 'booking'", args: [a.id] })).rows[0];
+  assert.equal((await record(a, { month: ch.month, charges: [ch.id], amount: ch.amount_try })).status, 201);
+  const rc = (await bill(a, ch.month)).receipts.find((r) => r.charges.some((c) => c.id === ch.id));
+  const c = rc.charges.find((x) => x.id === ch.id);
+  assert.deepEqual(c.reservation, { start_ms: s, end_ms: res.end_ms ?? s + 2 * 3600000, people: 2 });
+  assert.equal(c.applied_try, ch.amount_try);
+  const sub = rc.charges.find((x) => x.kind === "subscription");
+  if (sub) assert.equal(sub.reservation, null);
+  const adm = await J(await admin(`/receipts?user_id=${a.id}`));
+  assert.equal(adm.find((r) => r.id === rc.id).charges.find((x) => x.id === ch.id).reservation.people, 2);
 });
 
 test("failed reservation (overlap) leaves no charges behind", async () => {

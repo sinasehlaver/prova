@@ -352,3 +352,32 @@ a.link:hover { text-decoration: underline; filter: brightness(1.1); }
   background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -6px 12px -8px rgba(0, 0, 0, .35);
 }
 .pay-form.in-sheet .embed { width: 100%; min-height: 50vh; }
+
+/* Month switch in flight (useMonth): the nav already shows the new month; the old month's content dims until it lands */
+.month-loading > :not(.page-head):not(.detail-head):not(.mnav) { opacity: .5; pointer-events: none; transition: opacity 160ms cubic-bezier(.25, .8, .25, 1) 120ms; }
+@media (prefers-reduced-motion: reduce) { .month-loading > * { transition: none; } }
+
+/* ADR 0001 #4/#5: "Alacaktan öde" card + per-row overview button, debt reminder banner */
+.credit-pay { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2) var(--s-3); }
+.credit-pay .hint { margin: 0; }
+.owe-credit { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-2); padding: 0 var(--s-3) var(--s-2); }
+.debt-banner { margin-bottom: var(--s-3); }
+.debt-banner .link { color: inherit; font: inherit; text-decoration: underline; text-underline-offset: 2px; }
+
+/* reactivation sheet: passive months to bill (ADR 0001 #6) */
+.react-months { margin: var(--s-3) 0; max-height: 50vh; overflow: auto; }
+
+/* ADR 0001 #9 "Etkilenen kalemler" (fee review window) */
+.rv-list { margin: var(--s-3) 0; max-height: 55vh; overflow: auto; }
+.rv-row { display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap; padding: var(--s-2) 0; border-bottom: 1px solid var(--line); }
+.rv-row:last-child { border-bottom: 0; }
+.rv-main { flex: 1; min-width: 12rem; }
+.rv-main .num { margin-top: 2px; }
+.rv-main s { color: var(--muted); }
+.rv-effect { margin-left: var(--s-2); font-size: var(--fs-1); color: var(--muted); }
+.rv-acts { display: flex; gap: var(--s-2); flex-wrap: wrap; }
+.rv-bulk { flex-wrap: wrap; gap: var(--s-2); }
+.rv-done .rv-main { opacity: .75; }
+
+.rcpt-items { margin-block: var(--s-2); }
+.rcpt-items .fold-h { font-size: var(--fs-2); margin: 0; }

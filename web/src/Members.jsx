@@ -4,6 +4,8 @@ import { api } from "./api.js";
 import { tr } from "./tr.js";
 import { EmptyState, ErrorState, Skeleton } from "./States.jsx";
 import { ConfirmSheet, Select } from "./Controls.jsx";
+import Sheet from "./Sheet.jsx";
+import { fmtTRY, monthLabel } from "./Billing.jsx";
 import { PlusIcon } from "./icons.jsx";
 
 const ROLE_OPTS = [
@@ -13,6 +15,40 @@ const ROLE_OPTS = [
 ];
 
 const ROLE_OPTS_ROW = [...ROLE_OPTS, { value: "inactive", label: tr.members.inactive }];
+const M = tr.members;
+
+/** Pasif / back to active (ADR 0001 #6/#7/#10). p = GET /users/:id/status-preview. Going passive: balance + this month's
+ *  day-15 effect. Reactivating: tick which passive months get aidat (none by default) + this month's day-15 effect. */
+function StatusSheet({ u, p, onClose, onConfirm }) {
+  const [pick, setPick] = useState(() => new Set());
+  const off = u.active;
+  const toggle = (m) => setPick((s) => { const n = new Set(s); n.has(m) ? n.delete(m) : n.add(m); return n; });
+  return (
+    <Sheet title={off ? M.passiveTitle : M.reactTitle} onClose={onClose}>
+      {off ? (
+        <div className="confirm-body">
+          {p.debt_try !== 0 && <p>{M.passiveDebt(fmtTRY(p.debt_try))}</p>}
+          {p.credit_try !== 0 && <p>{M.passiveCredit(fmtTRY(p.credit_try))}</p>}
+          <p className="muted">{p.early ? M.passiveEarly : M.passiveLate}</p>
+        </div>
+      ) : (
+        <>
+          <ul className="card plain-list react-months">
+            <li><label className="check"><input type="checkbox" checked={pick.size === p.months.length} onChange={(e) => setPick(e.target.checked ? new Set(p.months) : new Set())} /><span>{M.reactAll}</span></label></li>
+            {p.months.map((m) => (
+              <li key={m}><label className="check"><input type="checkbox" checked={pick.has(m)} onChange={() => toggle(m)} /><span>{monthLabel(m)}</span></label></li>
+            ))}
+          </ul>
+          <p className="muted confirm-body">{p.early ? M.reactEarly : M.reactLate}</p>
+        </>
+      )}
+      <div className="row end confirm-actions">
+        <button type="button" className="btn" onClick={onClose}>{tr.ui.cancel}</button>
+        <button type="button" className="btn primary" data-autofocus onClick={() => { onClose(); onConfirm(p.months.filter((m) => pick.has(m))); }}>{off ? M.passiveConfirm : M.reactConfirm}</button>
+      </div>
+    </Sheet>
+  );
+}
 
 export default function Members({ me, onDetail }) {
   const [users, setUsers] = useState(null);
@@ -21,6 +57,7 @@ export default function Members({ me, onDetail }) {
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const [sure, setSure] = useState(null); // member pending a reject confirm
+  const [status, setStatus] = useState(null); // { u, newRole, p }: Pasif / reactivate sheet
   const timer = useRef();
 
   const say = (m) => { setToast(m); clearTimeout(timer.current); timer.current = setTimeout(() => setToast(""), 2200); };
@@ -36,10 +73,10 @@ export default function Members({ me, onDetail }) {
     e.preventDefault();
     setBusy(true);
     try {
-      await api("POST", "/users", form);
+      const n = await api("POST", "/users", form);
       setForm({ name: "", email: "", phone: "", role: "member" });
       setAdding(false);
-      say(tr.members.created);
+      say(n.early === false ? `${tr.members.created} · ${M.reactLate}` : tr.members.created);
       load();
     } catch (err) { fail(err); } finally { setBusy(false); }
   };
@@ -47,25 +84,39 @@ export default function Members({ me, onDetail }) {
   const decide = async (u, action, confirmed) => {
     if (action === "reject" && !confirmed) { setSure(u); return; }
     try {
-      await api("POST", `/users/${u.id}/${action}`);
-      say(action === "approve" ? tr.members.approved : tr.members.rejected);
+      const n = await api("POST", `/users/${u.id}/${action}`);
+      say(action === "approve" ? (n.early === false ? `${tr.members.approved} · ${M.reactLate}` : tr.members.approved) : tr.members.rejected);
       load();
       window.dispatchEvent(new Event("prova:users")); // refreshes the admin tab's pending-count bubble
     } catch (e) { fail(e); }
   };
 
   // "Pasif" is a pseudo-type: PATCH active=false (reservations/charges untouched, the user just can't use the app). Any real type reactivates.
+  // Going passive or coming back first fetches the preview (balance, day-15 side, passive months) for the sheet; a
+  // reactivation with no passive months to offer skips the sheet and just says the day-15 effect.
   const changeRole = async (u, newRole) => {
     const cur = u.active ? u.role : "inactive";
     if (newRole === cur) return;
-    const body = newRole === "inactive" ? { active: false } : { role: newRole, active: true };
-    try { replace(await api("PATCH", `/users/${u.id}`, body)); say(tr.members.roleChanged); } catch (e) { fail(e); }
+    if (newRole !== "inactive" && u.active) return applyRole(u, newRole);
+    try {
+      const p = await api("GET", `/users/${u.id}/status-preview`);
+      if (!u.active && !p.months.length) return applyRole(u, newRole, [], p);
+      setStatus({ u, newRole, p });
+    } catch (e) { fail(e); }
+  };
+  const applyRole = async (u, newRole, billMonths, p) => {
+    const body = newRole === "inactive" ? { active: false } : { role: newRole, active: true, ...(billMonths ? { bill_months: billMonths } : {}) };
+    try {
+      replace(await api("PATCH", `/users/${u.id}`, body));
+      say(p && !u.active ? `${tr.members.roleChanged} · ${p.early ? M.reactEarly : M.reactLate}` : tr.members.roleChanged);
+    } catch (e) { fail(e); }
   };
 
   return (
     <section>
+      {status && <StatusSheet u={status.u} p={status.p} onClose={() => setStatus(null)} onConfirm={(months) => applyRole(status.u, status.newRole, months, status.p)} />}
       {sure && <ConfirmSheet title={tr.members.reject} body={tr.members.rejectConfirm(sure.name)} confirmLabel={tr.members.reject} danger onClose={() => setSure(null)} onConfirm={() => decide(sure, "reject", true)} />}
-      <Fold tag="h2" defaultOpen={false} title={tr.members.title} sum={users ? approved.length + pending.length : null}
+      <Fold foldKey="members.list" tag="h2" defaultOpen={false} title={tr.members.title} sum={users ? approved.length + pending.length : null}
         actions={!adding && <button className="btn primary" onClick={() => setAdding(true)}><PlusIcon width="18" height="18" />{tr.members.add}</button>}>
 
       {adding && (

@@ -3,7 +3,10 @@
 // balance until an admin reviews it (AdminBilling -> Payments/UserDetail). The shared pieces below are reused there.
 import React, { useEffect, useRef, useState } from "react";
 import Fold from "./Fold.jsx";
+import { reservationText } from "./resText.js";
+import useFoldState from "./useFoldState.js";
 import usePoll from "./usePoll.js";
+import useMonth from "./useMonth.js";
 import "./billing.css";
 import { api, apiUpload } from "./api.js";
 import { tr } from "./tr.js";
@@ -127,12 +130,12 @@ export function PastOpen({ data, admin = false }) {
         const list = past.filter((i) => i.month === m);
         return admin
           ? <div key={m}><div className="muted small">{monthLabel(m)}</div><ItemList items={list} /></div>
-          : <Fold key={m} title={monthLabel(m)} sum={sumOf(list)} defaultOpen={false} className="fold-month"><ItemList items={list} /></Fold>;
+          : <Fold key={m} foldKey={"billing.past.month." + m} title={monthLabel(m)} sum={sumOf(list)} defaultOpen={false} className="fold-month"><ItemList items={list} /></Fold>;
       })}
     </>
   );
   if (admin) return <section aria-label={P.title}><h3 className="sec-title">{P.title}</h3>{body}</section>;
-  return <Fold title={P.title} sum={sumOf(past)} defaultOpen={false}>{body}</Fold>;
+  return <Fold foldKey="billing.past" title={P.title} sum={sumOf(past)} defaultOpen={false}>{body}</Fold>;
 }
 
 /**
@@ -160,7 +163,33 @@ export function DebtCard({ data, onPick, admin = false }) {
   );
   return (
     <section className="card debt" aria-label={title}>
-      {admin ? <><div className="debt-label">{title}</div><div className="debt-amount amount">{fmtTRY(data.debt_try)}</div>{list}</> : <Fold title={title} defaultOpen={false} sum={fmtTRY(data.debt_try)} className="fold-debt">{list}</Fold>}
+      {admin ? <><div className="debt-label">{title}</div><div className="debt-amount amount">{fmtTRY(data.debt_try)}</div>{list}</> : <Fold foldKey="billing.debt" title={title} defaultOpen={false} sum={fmtTRY(data.debt_try)} className="fold-debt">{list}</Fold>}
+    </section>
+  );
+}
+
+/** "Toplam borcun: X TL (N ay)" reminder (ADR 0001 #5), member only. `onGo` = link to Ödemelerim (Takvim passes it). */
+export function DebtBanner({ debtTry, months, onGo }) {
+  if (!(debtTry > 0)) return null;
+  const text = tr.billing.debt.banner(fmtTRY(debtTry), Math.max(1, months));
+  return (
+    <p className="notice bad debt-banner" role="status">
+      {onGo ? <button type="button" className="link" onClick={onGo} aria-label={`${text} · ${tr.billing.debt.bannerGo}`}>{text}</button> : text}
+    </p>
+  );
+}
+
+/** "Alacaktan öde (X TL)" (ADR 0001 #4): alacak AND debt -> hint + button; spends min(alacak, debt) on the oldest debt.
+ *  `onPay` returns a promise (the caller posts + reloads); `admin` = third-person hint. */
+export function CreditPay({ creditTry, debtTry, onPay, admin = false }) {
+  const [busy, setBusy] = useState(false);
+  if (!(creditTry > 0 && debtTry > 0)) return null;
+  const K = tr.billing.creditPay;
+  const run = async () => { setBusy(true); try { await onPay(); } finally { setBusy(false); } };
+  return (
+    <section className="card credit-pay" aria-label={K.button(fmtTRY(Math.min(creditTry, debtTry)))}>
+      <p className="hint">{(admin ? K.hintAdmin : K.hint)(fmtTRY(creditTry), fmtTRY(debtTry))}</p>
+      <button type="button" className="btn primary" disabled={busy} aria-busy={busy || undefined} onClick={run}>{K.button(fmtTRY(Math.min(creditTry, debtTry)))}</button>
     </section>
   );
 }
@@ -216,8 +245,9 @@ export function ItemList({ items, selectable, selected, onToggle, extra, empty =
               <div>
                 <div className="bill-title">{itemTitle(it)}</div>
                 <div className="bill-sub">
-                  <StatusPill status={it.status} flag={it.flag} partial={it.status === "unpaid" && it.paid_try > 0} />
+                  <StatusPill status={it.void_kind === "passive" ? "passive" : it.status} flag={it.flag} partial={it.status === "unpaid" && it.paid_try > 0} />
                   {it.status === "unpaid" && it.paid_try > 0 && <span className="bill-left">{tr.billing.ofAmount(fmtTRY(it.paid_try))} · <b>{tr.billing.remaining}: {fmtTRY(it.remaining_try)}</b></span>}
+                  {it.waive_kind === "rest" && <span className="bill-left">{tr.billing.restWaived(fmtTRY(it.paid_try))}</span>}
                   {it.status === "paid" && it.paid_by && <span>{tr.billing.paidBy[it.paid_by]}</span>}
                   {it.reservation?.cancelled && <span>{tr.billing.cancelledRes}</span>}
                 </div>
@@ -275,31 +305,50 @@ function ResubmitForm({ r, onDone, onCancel }) {
   );
 }
 
+/** What one charge on a dekont is, concretely: aidat + month, booking date/time/people, or the adjustment note. */
+export const chargeDetail = (c) =>
+  c.kind === "subscription" ? `${tr.billing.subscription} · ${monthLabel(c.month)}`
+    : c.kind === "booking" && c.reservation ? reservationText(c.reservation)
+      : chargeName(c);
+
+/** Nested collapsed fold inside a dekont body listing every item it paid. Renders nothing without allocated items. */
+export function ReceiptItems({ r, picked, foldKey }) {
+  if (!picked.length) return null;
+  const total = picked.reduce((s, c) => s + Number(c.applied_try ?? c.amount_try ?? 0), 0);
+  return (
+    <Fold tag="h4" foldKey={foldKey} defaultOpen={false} className="rcpt-items" title={tr.billing.paidItems}
+      sum={`${picked.length} · ${fmtTRY(total)}`}>
+      <ul className="pay-covered">
+        {picked.map((c) => (
+          <li key={c.id}>
+            <span>{chargeDetail(c)}{c.kind !== "subscription" && c.month && c.month !== r.month && <span className="muted small"> · {monthLabel(c.month)}</span>}</span>
+            <span className="amount">{fmtTRY(c.applied_try ?? c.amount_try)}</span>
+          </li>
+        ))}
+      </ul>
+    </Fold>
+  );
+}
+
 export function ReceiptRow({ r, onDelete, onResubmitted, children }) {
   const [editing, setEditing] = useState(false);
+  const [open, setOpen] = useFoldState("billing.receipt." + r.id, false);
   const rejected = r.status === "mismatch" && r.charges.length === 0;
   const ok = r.status === "ok";
   const picked = r.charges.filter((c) => c.selected !== false);
   return (
     <li className="card rcpt">
       <div className="rcpt-head">
-        <span className="rcpt-name">{r.filename || `Dekont #${r.id}`}</span>
+        <button type="button" className="fold-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <svg className="mr-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" style={{ transform: open ? "rotate(90deg)" : undefined }}><path d="M9 6l6 6-6 6" /></svg>
+          <b className="rcpt-name">{fmtTRY(r.paid_try ?? r.expected_try ?? 0)}</b><small>{dayTime.format(r.uploaded_at)}</small>
+        </button>
         {rejected ? <span className="pill warn">{tr.billing.rejectedPill}</span> : <StatusPill status={ok ? "paid" : undefined} flag={ok ? undefined : r.status} partial={ok && r.remaining_try > 0} />}
       </div>
+      <div hidden={!open}>
+      <div className="muted small">{r.filename || `Dekont #${r.id}`}</div>
       <p className="rcpt-msg">{r.message}</p>
-      {picked.length > 0 && (
-        <div className="pay-items">
-          <div className="pay-legend">{tr.billing.coversSelf}</div>
-          <ul className="pay-covered">
-            {picked.map((c) => (
-              <li key={c.id}>
-                <span>{chargeName(c)}{c.month && c.month !== r.month && <span className="muted small"> · {monthLabel(c.month)}</span>}</span>
-                <span className="amount">{fmtTRY(c.amount_try)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <ReceiptItems r={r} picked={picked} foldKey={"billing.receipt." + r.id + ".items"} />
       {ok && <PaySummary saved count={picked.length} sum={r.expected_try} paid={r.cash_try ?? r.paid_try} credit={r.credit_try ?? 0} spill={r.spill_try} owed={r.overpaid_try}
         paidLabel={tr.admin.pay.paid} owedLabel={tr.billing.owedSelf} />}
       <div className="row wrap">
@@ -310,6 +359,7 @@ export function ReceiptRow({ r, onDelete, onResubmitted, children }) {
       </div>
       {editing && <ResubmitForm r={r} onCancel={() => setEditing(false)} onDone={() => { setEditing(false); onResubmitted(r); }} />}
       {children}
+      </div>
     </li>
   );
 }
@@ -346,7 +396,7 @@ export function PayTo({ pay_to, onCopied }) {
 }
 
 export default function Billing() {
-  const [data, setData] = useState(null);
+  const { data, setData, load: loadMonth, dim, shown, fresh } = useMonth((month) => api("GET", "/billing" + (month ? `?month=${month}` : "")), "month.billing");
   const [loadErr, setLoadErr] = useState("");
   const [toast, setToast] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -355,11 +405,11 @@ export default function Billing() {
 
   const load = async (month) => {
     try {
-      setData(await api("GET", "/billing" + (month ? `?month=${month}` : "")));
+      await loadMonth(month);
     } catch (e) { setLoadErr(e.message || tr.err.load); say(e.message || tr.err.generic); }
   };
   useEffect(() => { load(); }, []);
-  usePoll((ok) => api("GET", "/billing" + (data?.month ? `?month=${data.month}` : "")).then((d) => { if (ok()) setData(d); }), { enabled: !!data });
+  usePoll((ok) => api("GET", "/billing" + (data?.month ? `?month=${data.month}` : "")).then((d) => { if (ok() && fresh(d)) setData(d); }), { enabled: !!data });
 
   const upload = async (e) => {
     const f = e.target.files?.[0];
@@ -379,19 +429,26 @@ export default function Billing() {
     catch (err) { say(err.message || tr.err.generic); }
   };
 
+  const payFromCredit = async () => {
+    try { const r = await api("POST", "/billing/credit/pay"); say(tr.billing.creditPay.done(fmtTRY(r.paid_try))); await load(data?.month); }
+    catch (err) { say(err.message || tr.err.generic); }
+  };
+
   if (!data) return <section><div className="page-head"><h2>{tr.billing.title}</h2></div>{loadErr ? <ErrorState message={loadErr} onRetry={() => { setLoadErr(""); load(); }} /> : <Skeleton rows={3} />}</section>;
 
   return (
-    <section>
+    <section className={dim ? "month-loading" : undefined} aria-busy={dim || undefined}>
       <div className="page-head"><h2>{tr.billing.title}</h2></div>
-      <MonthNav month={data.month} months={data.months} onChange={load} />
+      <DebtBanner debtTry={data.debt_try} months={(data.debt_months ?? []).length} />
+      <MonthNav month={shown} months={data.months} onChange={load} />
       <KalanCard data={data} />
       <DebtCard data={data} onPick={load} />
+      <CreditPay creditTry={data.credit.balance_try} debtTry={data.debt_try} onPay={payFromCredit} />
       <CreditCover cover={data.credit_cover} />
       <CreditCard credit={data.credit} />
       <PayTo pay_to={data.pay_to} onCopied={() => say(tr.billing.copied)} />
 
-      <Fold title={tr.billing.items} defaultOpen={false} sum={fmtTRY(data.items.reduce((a, i) => a + (i.amount_try ?? 0), 0))}>
+      <Fold foldKey="billing.items" title={tr.billing.items} defaultOpen={false} sum={fmtTRY(data.items.reduce((a, i) => a + (i.amount_try ?? 0), 0))}>
         <ItemList items={data.items} empty={data.future ? tr.billing.future.empty : undefined} />
       </Fold>
       <PastOpen data={data} />
@@ -410,8 +467,9 @@ export default function Billing() {
 
       {data.receipts.length > 0 && (
         <>
-          <h3 className="sec-title">{tr.billing.receipts}</h3>
+          <Fold foldKey="billing.receipts" title={tr.billing.receipts} sum={data.receipts.length} defaultOpen={false}>
           <ul className="list">{data.receipts.map((r) => <ReceiptRow key={r.id} r={r} onDelete={removeReceipt} onResubmitted={async () => { say(tr.billing.resubmit.done); await load(data?.month); }} />)}</ul>
+          </Fold>
         </>
       )}
       <div className={"toast" + (toast ? " show" : "")} role="status">{toast}</div>

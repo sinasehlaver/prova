@@ -19,6 +19,7 @@ web/dist
 *.key
 .vite/
 coverage/
+docs/
 verify-shots/
 .github/workflows/restore.yml
 prova-before-delete.sql

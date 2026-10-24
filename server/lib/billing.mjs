@@ -19,22 +19,6 @@ export const monthRange = (from, to) => {
   return out;
 };
 
-/**
- * A subscription charge that became unpaid again (receipt deleted / rejected) re-reads the fee now in force for its month:
- * charges are snapshots, and a setFee made while it was paid/covered skipped it. Only open, uncovered subscription charges.
- */
-export async function repriceOpenSubscriptions(db, chargeIds) {
-  for (const id of chargeIds) {
-    const c = (await db.execute({
-      sql: `SELECT c.id, c.month, c.amount_try FROM charges c WHERE c.id = ? AND c.kind = 'subscription' AND c.voided_at IS NULL
-            AND c.waived_at IS NULL AND c.paid_receipt_id IS NULL AND ${COVERED_SQL} = 0`, args: [id],
-    })).rows[0];
-    if (!c) continue;
-    const { subscription_try } = await feeFor(db, c.month);
-    if (subscription_try !== c.amount_try) await db.execute({ sql: "UPDATE charges SET amount_try = ? WHERE id = ?", args: [subscription_try, c.id] });
-  }
-}
-
 /** Fee row in force for `month`: latest effective_from <= month. */
 export async function feeFor(db, month) {
   const r = (await db.execute({
@@ -54,32 +38,65 @@ export async function addBookingCharges(tx, reservationId, bookerId, people, sta
   });
 }
 
-/** Inside the reservation-edit tx: re-price the booking charge to people x the NEW month's fee. A charge that is paid, part-covered or
- *  waived is locked: only a same-month, same-people edit passes (409 otherwise). Unpaid / absent charge is moved + re-priced. */
+/**
+ * Raw (tx): give a live charge a new amount and fix its paid state from coverage (ADR 0001 #9 / #11): paid but now
+ * short -> unpaid again for the rest; unpaid but now fully covered -> paid by its latest covering ok receipt
+ * (paid_by 'admin'). Coverage above the new amount is alacak by itself (creditRaw's over-coverage term).
+ * `c` = charge row with `covered`.
+ */
+export async function setAmountRaw(tx, c, newTry) {
+  const cov = Number(c.covered);
+  await tx.execute({ sql: "UPDATE charges SET amount_try = ? WHERE id = ?", args: [newTry, c.id] });
+  if (c.paid_receipt_id && newTry > cov)
+    await tx.execute({ sql: "UPDATE charges SET paid_receipt_id = NULL, paid_by = NULL WHERE id = ?", args: [c.id] });
+  else if (!c.paid_receipt_id && cov > 0 && cov >= newTry) {
+    const rid = (await tx.execute({
+      sql: `SELECT MAX(rc.receipt_id) AS id FROM receipt_charges rc JOIN receipts rr ON rr.id = rc.receipt_id
+            WHERE rc.charge_id = ? AND rr.status = 'ok'`, args: [c.id],
+    })).rows[0].id;
+    await tx.execute({ sql: "UPDATE charges SET paid_receipt_id = ?, paid_by = 'admin' WHERE id = ?", args: [rid, c.id] });
+  }
+}
+
+/**
+ * Inside the reservation-edit tx: re-price the booking charge to people x the NEW month's fee (ADR 0001 #11: paid
+ * bookings can be edited too). Paid / part-paid: cheaper -> the paid difference becomes alacak, dearer -> the same
+ * item is unpaid again for the difference (user's pick 2026-10-24, not a second charge); 0 people -> voided, all
+ * paid money -> alacak. Waived stays waived. Returns { debt_try, credit_try } = what the edit changed for a charge
+ * that had money on it (both 0 otherwise), for the member's toast.
+ */
 export async function repriceBookingCharge(tx, reservationId, bookerId, people, startMs) {
+  const none = { debt_try: 0, credit_try: 0 };
   const month = monthOf(startMs);
   const c = (await tx.execute({
     sql: `SELECT c.*, ${COVERED_SQL} AS covered FROM charges c WHERE c.reservation_id = ? AND c.kind = 'booking' AND c.voided_at IS NULL`,
     args: [reservationId],
   })).rows[0];
-  if (!c) return addBookingCharges(tx, reservationId, bookerId, people, startMs);
+  if (!c) { await addBookingCharges(tx, reservationId, bookerId, people, startMs); return none; }
   const { booking_try } = await feeFor(tx, month);
-  const amount = booking_try * people;
-  if (amount === 0 && !(c.paid_receipt_id || c.waived_at || Number(c.covered) > 0)) {
-    await tx.execute({ sql: "UPDATE charges SET voided_at = ? WHERE id = ?", args: [Date.now(), c.id] });
-    return;
+  const amount = booking_try * people, cov = Number(c.covered), old = c.amount_try;
+  if (amount === 0) await tx.execute({ sql: "UPDATE charges SET voided_at = ? WHERE id = ?", args: [Date.now(), c.id] });
+  else {
+    if (c.month !== month) await tx.execute({ sql: "UPDATE charges SET month = ? WHERE id = ?", args: [month, c.id] });
+    if (amount !== old) {
+      if (c.waived_at) await tx.execute({ sql: "UPDATE charges SET amount_try = ? WHERE id = ?", args: [amount, c.id] });
+      else await setAmountRaw(tx, c, amount);
+    }
   }
-  if (c.paid_receipt_id || c.waived_at || Number(c.covered) > 0) {
-    if (c.month !== month || amount !== c.amount_try) throw fail(409, "Ödemesi alınmış rezervasyonun ay ya da kişi sayısı değiştirilemez");
-    return;
-  }
-  await tx.execute({ sql: "UPDATE charges SET month = ?, amount_try = ? WHERE id = ?", args: [month, amount, c.id] });
+  if (!(cov > 0) || c.waived_at || amount === old) return none;
+  // a dearer edit of an item whose earlier price-down alacak was spent -> "Harcanan alacak" (#8). Lazy: cycle.
+  await (await import("./credits.mjs")).absorbSpentCreditRaw(tx, c.user_id, "rezervasyon değişti");
+  return {
+    debt_try: Math.max(amount - cov, 0) - Math.max(old - cov, 0),
+    credit_try: (amount === 0 ? cov : Math.max(cov - amount, 0)) - Math.max(cov - old, 0),
+  };
 }
 
-/** Inside the reservation-cancel tx: void the unpaid booking charges (paid ones stay). */
+/** Inside the reservation-cancel tx: void the booking charges, paid or not (ADR 0001 #1). Whatever was paid on them
+ *  turns into alacak by itself (creditBalance counts applied money on voided charges). */
 export const voidBookingCharges = (tx, reservationId, now) =>
   tx.execute({
-    sql: "UPDATE charges SET voided_at = ? WHERE reservation_id = ? AND paid_receipt_id IS NULL AND voided_at IS NULL",
+    sql: "UPDATE charges SET voided_at = ? WHERE reservation_id = ? AND voided_at IS NULL",
     args: [now, reservationId],
   });
 
@@ -94,6 +111,28 @@ export async function ensureMonthRaw(db, user, month) {
   });
 }
 export const ensureMonth = (db, user, month) => serial(() => ensureMonthRaw(db, user, month));
+
+/** ensureMonthRaw for many months: 1 read when all exist (the usual case), else + fees read + ONE insert. Was 2 round trips
+ *  per month on every billing read (~0.7-1.5 s per month switch on Turso, 2026-10-22). Same rules: active, >= joined_month,
+ *  never the bootstrap admin, fee = row in force for that month (feeFor order), uq_charges_subscription makes it idempotent. */
+export async function ensureMonthsRaw(db, user, months) {
+  months = months.filter((m) => m >= user.joined_month);
+  if (!user.active || !months.length) return;
+  const have = new Set((await db.execute({
+    sql: "SELECT month FROM charges WHERE user_id = ? AND kind = 'subscription' AND month BETWEEN ? AND ?",
+    args: [user.id, months.reduce((a, m) => (m < a ? m : a)), months.reduce((a, m) => (m > a ? m : a))],
+  })).rows.map((r) => r.month));
+  const missing = months.filter((m) => !have.has(m));
+  if (!missing.length) return;
+  const fees = (await db.execute("SELECT effective_from, subscription_try FROM fees ORDER BY effective_from, id")).rows;
+  const fee = (m) => fees.reduce((a, f) => (f.effective_from <= m ? f.subscription_try : a), 0);
+  await db.execute({
+    sql: `INSERT OR IGNORE INTO charges (user_id, month, kind, amount_try)
+          SELECT ?1, json_extract(j.value, '$[0]'), 'subscription', json_extract(j.value, '$[1]') FROM json_each(?2) j WHERE ?1 <> ${BOOTSTRAP_ID_SQL}`,
+    args: [user.id, JSON.stringify(missing.map((m) => [m, fee(m)]))],
+  });
+}
+export const ensureMonths = (db, user, months) => serial(() => ensureMonthsRaw(db, user, months));
 
 /** How far ahead a month can be browsed / prepaid (decided 2026-09-23): current + 12. */
 export const MAX_AHEAD = 12;
@@ -142,9 +181,11 @@ const ITEM_SQL = `SELECT c.*, ${COVERED_SQL} AS covered, r.start_ms, r.end_ms, r
           FROM charges c LEFT JOIN reservations r ON r.id = c.reservation_id`;
 const toItem = (c, flag = null) => {
   const status = statusOf(c);
-  const covered = status === "unpaid" ? Math.min(Number(c.covered), c.amount_try) : 0;
+  const rest = status === "waived" && c.waive_kind === "rest"; // "Kalanı sil": the paid part still counts as paid
+  const covered = status === "unpaid" || rest ? Math.min(Number(c.covered), c.amount_try) : 0;
   return {
     id: c.id, key: String(c.id), month: c.month, kind: c.kind, amount_try: c.amount_try, status, paid_by: c.paid_by, note: c.note,
+    waive_kind: rest ? "rest" : null, void_kind: status === "voided" ? c.void_kind ?? null : null, covered_try: Math.min(Number(c.covered), c.amount_try),
     paid_try: status === "paid" ? c.amount_try : covered, remaining_try: status === "unpaid" ? c.amount_try - covered : 0,
     flag: status === "unpaid" ? flag : null,
     reservation: c.reservation_id ? { id: c.reservation_id, start_ms: c.start_ms, end_ms: c.end_ms, note: c.r_note, people: c.r_people, cancelled: !!c.r_cancelled } : null,
@@ -197,6 +238,7 @@ export async function monthView(db, userId, month) {
     const it = toItem(c, flags.get(c.id) ?? null);
     if (it.status === "unpaid") { kalan += it.remaining_try; paid += it.paid_try; }
     if (it.status === "paid") paid += c.amount_try;
+    if (it.waive_kind === "rest") { paid += it.paid_try; total += it.paid_try; }
     if (it.status === "unpaid" || it.status === "paid") total += c.amount_try;
     return it;
   });
@@ -259,13 +301,22 @@ export async function outstandingOverview(db, month) {
   };
 }
 
-/** Admin: waive (or un-waive) an unpaid, non-void charge. */
-export const waiveCharge = (db, chargeId, waived, now = Date.now()) => serial(async () => {
-  const c = (await db.execute({ sql: "SELECT * FROM charges WHERE id = ?", args: [chargeId] })).rows[0];
+/**
+ * Admin: waive (or un-waive) an unpaid, non-void charge. On a part-paid charge `mode` picks (ADR 0001 #2):
+ * 'rest' = "Kalanı sil" (only the remainder is forgiven, the paid part stays a payment) or 'all' = "Tamamını iptal et"
+ * (default; the paid part becomes alacak). An uncovered charge ignores `mode`.
+ */
+export const waiveCharge = (db, chargeId, waived, now = Date.now(), mode = "all") => serial(async () => {
+  if (mode !== "all" && mode !== "rest") throw fail(400, "Geçersiz muafiyet türü");
+  const c = (await db.execute({ sql: `SELECT c.*, ${COVERED_SQL} AS covered FROM charges c WHERE c.id = ?`, args: [chargeId] })).rows[0];
   if (!c) throw fail(404, "Kalem bulunamadı");
   if (c.voided_at) throw fail(409, "İptal edilmiş kalem");
   if (c.paid_receipt_id) throw fail(409, "Ödenmiş kalem muaf tutulamaz");
-  await db.execute({ sql: "UPDATE charges SET waived_at = ? WHERE id = ?", args: [waived ? now : null, chargeId] });
+  const kind = waived && mode === "rest" && Number(c.covered) > 0 ? "rest" : null;
+  await db.execute({ sql: "UPDATE charges SET waived_at = ?, waive_kind = ? WHERE id = ?", args: [waived ? now : null, kind, chargeId] });
+  // unwaive takes back the alacak its part-payment had become; if that was spent -> "Harcanan alacak" (ADR 0001 #8).
+  // Lazy import: credits.mjs imports billing.mjs.
+  if (!waived) await (await import("./credits.mjs")).absorbSpentCreditRaw(db, c.user_id);
 });
 
 /** Admin: extra positive charge with a label (e.g. lost key). Whole TRY. */
@@ -295,8 +346,8 @@ export const FEE_MIN_MONTH = "2025-01";
  * Model stays effective_from: a month override = upsert the row for `month` PLUS, if the next month has no row of its own,
  * a row for next month carrying the fee that was in force for `month` before the edit - so other months never change.
  * (Rows therefore accumulate, one per edited month; harmless, feeFor takes the latest <= month.)
- * Then UNPAID charges of that month are re-priced: subscription -> new subscription_try, booking -> reservation people x
- * new booking_try. Untouched: paid, partly covered, voided, waived, adjustments. Returns the number of re-priced charges.
+ * Existing charges keep their amount: each subscription / booking of that month (paid ones too) whose price under the new
+ * fee differs gets an open fee review (ADR 0001 #9, "Etkilenen kalemler"). Returns the number of open reviews for the month.
  * Whole TRY, multiples of 50, 0..100000.
  */
 export const setFee = (db, { effectiveFrom: month, subscriptionTry, bookingTry }) => serial(async () => {
@@ -310,16 +361,7 @@ export const setFee = (db, { effectiveFrom: month, subscriptionTry, bookingTry }
   const same = (await db.execute({ sql: "SELECT id FROM fees WHERE effective_from = ?", args: [month] })).rows[0];
   if (same) await db.execute({ sql: "UPDATE fees SET subscription_try = ?, booking_try = ? WHERE id = ?", args: [subscriptionTry, bookingTry, same.id] });
   else await db.execute({ sql: "INSERT INTO fees (effective_from, subscription_try, booking_try) VALUES (?,?,?)", args: [month, subscriptionTry, bookingTry] });
-  const open = `c.month = ?1 AND c.voided_at IS NULL AND c.waived_at IS NULL AND c.paid_receipt_id IS NULL AND ${COVERED_SQL} = 0`;
-  const a = await db.execute({
-    sql: `UPDATE charges AS c SET amount_try = ?2 WHERE c.kind = 'subscription' AND c.amount_try <> ?2 AND ${open}`,
-    args: [month, subscriptionTry],
-  });
-  const b = await db.execute({
-    sql: `UPDATE charges AS c SET amount_try = ?2 * (SELECT r.people FROM reservations r WHERE r.id = c.reservation_id)
-          WHERE c.kind = 'booking' AND c.reservation_id IS NOT NULL AND ${open}
-            AND c.amount_try <> ?2 * (SELECT r.people FROM reservations r WHERE r.id = c.reservation_id)`,
-    args: [month, bookingTry],
-  });
-  return a.rowsAffected + b.rowsAffected;
+  // ADR 0001 #9: no silent re-price - every affected item of the month waits for the admin (lib/fee-reviews.mjs).
+  // Lazy import: fee-reviews.mjs imports billing.mjs.
+  return (await import("./fee-reviews.mjs")).syncReviewsRaw(db, month);
 });

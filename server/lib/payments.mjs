@@ -12,14 +12,17 @@
 // creditBalance keep their invariants; only the source of the number changed (parser -> admin, always).
 import { randomUUID } from "node:crypto";
 import { verifyReceipt, fmtAmount } from "./receipt.mjs";
-import { COVERED_SQL, ensureMonthRaw, fail, isMonth, maxMonth, projectedSub, repriceOpenSubscriptions } from "./billing.mjs";
-import { creditBalance } from "./credits.mjs";
+import { COVERED_SQL, ensureMonthRaw, fail, isMonth, maxMonth, projectedSub } from "./billing.mjs";
+import { BOOTSTRAP_ID_SQL } from "./auth.mjs";
+import { absorbSpentCreditRaw, creditBalance } from "./credits.mjs";
 import { serial } from "./serial.mjs";
 import { currentMonth } from "./tz.mjs";
 
 export const MAX_PDF = 5 * 1024 * 1024;
 /** admin_note prefix of a "paid from existing credit" receipt (overpaid_try < 0 is the real marker). */
 export const CREDIT_NOTE = "Yönetici alacaktan mahsup etti";
+/** admin_note of a member's own "Alacaktan öde" (ADR 0001 #4); shown as-is like the "Yönetici…" notes. */
+export const MEMBER_CREDIT_NOTE = "Üye alacağından ödedi";
 
 export async function getSettings(db) {
   const s = Object.fromEntries((await db.execute("SELECT key, value FROM settings")).rows.map((r) => [r.key, r.value]));
@@ -40,7 +43,7 @@ export function receiptMessage(r) {
   if (r.admin_note != null) {
     if (r.status !== "ok") return `Yönetici reddetti: ${r.admin_note}`;
     const note = r.admin_note || "Yönetici onayladı"; // notes the admin wrote themselves get the "Yönetici onayladı:" prefix
-    return [note.startsWith("Yönetici") ? note : `Yönetici onayladı: ${note}`, tail].filter(Boolean).join(" ");
+    return [note.startsWith("Yönetici") || note === MEMBER_CREDIT_NOTE ? note : `Yönetici onayladı: ${note}`, tail].filter(Boolean).join(" ");
   }
   if (r.status === "ok") return tail && under ? tail : [`${fmtAmount(exp)} TL doğrulandı.`, tail].filter(Boolean).join(" ");
   if (r.status === "duplicate") return "Bu dekont daha önce yüklenmiş.";
@@ -98,15 +101,19 @@ export async function listReceipts(db, { id, userId, month, status, viewer = nul
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
   const ch = (await db.execute({
-    sql: `SELECT rc.receipt_id, rc.applied_try AS rc_applied, c.id, c.month, c.kind, c.amount_try, c.note, c.paid_receipt_id, c.voided_at, c.waived_at
-          FROM receipt_charges rc JOIN charges c ON c.id = rc.charge_id WHERE rc.receipt_id IN (${ids.map(() => "?").join(",")}) ORDER BY rc.rowid`,
+    sql: `SELECT rc.receipt_id, rc.applied_try AS rc_applied, c.id, c.month, c.kind, c.amount_try, c.note, c.paid_receipt_id, c.voided_at, c.waived_at,
+                 rv.start_ms AS res_start_ms, rv.end_ms AS res_end_ms, rv.people AS res_people
+          FROM receipt_charges rc JOIN charges c ON c.id = rc.charge_id LEFT JOIN reservations rv ON rv.id = c.reservation_id WHERE rc.receipt_id IN (${ids.map(() => "?").join(",")}) ORDER BY rc.rowid`,
     args: ids,
   })).rows;
   return rows.map((r) => {
     const ok = r.status === "ok";
     const applied = ok ? r.applied_try ?? r.expected_try : null;
     const charges = markSelected(
-      ch.filter((c) => c.receipt_id === r.id).map(({ id, month, kind, amount_try, note, rc_applied }) => ({ id, month, kind, amount_try, note, applied_try: rc_applied })),
+      ch.filter((c) => c.receipt_id === r.id).map(({ id, month, kind, amount_try, note, rc_applied, res_start_ms, res_end_ms, res_people }) => ({
+        id, month, kind, amount_try, note, applied_try: rc_applied,
+        reservation: kind === "booking" && res_start_ms != null ? { start_ms: res_start_ms, end_ms: res_end_ms, people: res_people } : null,
+      })),
       r.expected_try,
     );
     // credit used = the explicit column, or (legacy pure from-credit rows) minus the negative overpaid_try; overpaid_try is the NET
@@ -275,7 +282,7 @@ export const submitReceipt = (db, user, { buffer, filename = null, month = curre
 // an ordinary ok receipt (no PDF, no spill onto other items) whose overpaid_try is NEGATIVE (= -applied): creditBalance
 // sums overpaid_try of ok receipts, so the credit shrinks by exactly what was applied, and an undo (reject -> mismatch)
 // gives back both the coverage and the credit in one step. No new table, no parallel ledger.
-export const recordPayment = (db, user, { month, chargeIds = null, paidTry, buffer = null, filename = null, note = null, fromCredit = false, creditTry = 0, now = Date.now() }) => serial(async () => {
+export const recordPayment = (db, user, { month, chargeIds = null, paidTry, buffer = null, filename = null, note = null, fromCredit = false, creditTry = 0, noteBase = null, now = Date.now() }) => serial(async () => {
   if (!isMonth(month)) throw fail(400, "Geçersiz ay");
   // legacy pure from-credit: the whole amount is credit (clamped to the picked total below)
   if (fromCredit) { creditTry = paidTry; paidTry = 0; }
@@ -313,7 +320,7 @@ export const recordPayment = (db, user, { month, chargeIds = null, paidTry, buff
             VALUES (?,?,?,?,?,?,?,?, 'ok', ?,?,?,?,?,?,?)`,
       args: [user.id, month, String(filename ?? "").slice(0, 120) || null, pdf, sha, v ? v.text.slice(0, 20000) : null,
         JSON.stringify(v?.foundAmounts ?? []), v?.bankRef ?? null, expected, v?.found ?? null, now,
-        `${creditTry > 0 && paidTry === 0 ? CREDIT_NOTE : "Yönetici kaydetti"}${adminNote ? `: ${adminNote}` : ""}`, 0, 0, creditTry],
+        `${noteBase ?? (creditTry > 0 && paidTry === 0 ? CREDIT_NOTE : "Yönetici kaydetti")}${adminNote ? `: ${adminNote}` : ""}`, 0, 0, creditTry],
     });
     const id = Number(lastInsertRowid);
     await materialiseRaw(tx, user, picked);
@@ -330,6 +337,31 @@ export const recordPayment = (db, user, { month, chargeIds = null, paidTry, buff
     tx.close();
   }
 });
+
+/**
+ * "Alacaktan öde" (ADR 0001 #4): spend the member's alacak on their open debt (months <= current), oldest first. Only as
+ * many oldest items are picked as the amount reaches; the last one may end part-paid. Same receipt as fromCredit (no new
+ * money, admin can delete it to undo). byMember = the member pressed it on their own page (note in member voice).
+ */
+export async function payFromCredit(db, user, { byMember = false, now = Date.now() } = {}) {
+  const balance = await creditBalance(db, user.id);
+  const open = (await db.execute({
+    sql: `SELECT c.id, MAX(c.amount_try - ${COVERED_SQL}, 0) AS need FROM charges c
+          WHERE c.user_id = ? AND c.user_id <> ${BOOTSTRAP_ID_SQL} AND c.month <= ?
+            AND c.voided_at IS NULL AND c.waived_at IS NULL AND c.paid_receipt_id IS NULL
+          ORDER BY c.month, CASE c.kind WHEN 'subscription' THEN 0 WHEN 'booking' THEN 1 ELSE 2 END, c.id`,
+    args: [user.id, currentMonth()],
+  })).rows.map((c) => ({ id: c.id, need: Number(c.need) })).filter((c) => c.need > 0);
+  const debt = open.reduce((s, c) => s + c.need, 0);
+  if (balance <= 0 || debt <= 0) throw fail(409, "Alacaktan ödenecek borç yok");
+  const amount = Math.min(balance, debt);
+  const ids = [];
+  for (let left = amount, i = 0; left > 0 && i < open.length; left -= open[i].need, i++) ids.push(open[i].id);
+  const r = await recordPayment(db, user, {
+    month: currentMonth(), chargeIds: ids, paidTry: amount, fromCredit: true, noteBase: byMember ? MEMBER_CREDIT_NOTE : CREDIT_NOTE, now,
+  });
+  return { ...r, paid_try: amount };
+}
 
 /**
  * Admin: approve or reject.
@@ -393,6 +425,9 @@ export const reviewReceipt = (db, id, action, note, extra = {}, now = Date.now()
                 WHERE rc.receipt_id = ? AND c.paid_receipt_id IS NULL AND c.voided_at IS NULL AND c.waived_at IS NULL ORDER BY c.id`,
           args: [id],
         })).rows; // receipt still not ok here, so its own old allocations are not in `covered`
+        // its old rows on charges it no longer pays (paid in full meanwhile, voided, waived) must not count once it is ok
+        // again: creditRaw reads coverage above a charge's amount as alacak (ADR 0001 #9)
+        await tx.execute({ sql: "UPDATE receipt_charges SET applied_try = 0 WHERE receipt_id = ?", args: [id] });
         let total = 0;
         for (const c of cs) {
           const need = Math.max(0, c.amount_try - Number(c.covered));
@@ -424,7 +459,7 @@ export const reviewReceipt = (db, id, action, note, extra = {}, now = Date.now()
         args: [id],
       })).rows;
       for (const c of cs) if (Number(c.covered) < c.amount_try) await tx.execute({ sql: "UPDATE charges SET paid_receipt_id = NULL, paid_by = NULL WHERE id = ?", args: [c.id] });
-      await repriceOpenSubscriptions(tx, rejOwn);
+      if (r.status === "ok") await absorbSpentCreditRaw(tx, r.user_id, "ödeme geri alındı"); // ADR 0001 #8
     }
     await tx.commit();
   } catch (e) {
@@ -456,7 +491,7 @@ export const deleteReceipt = (db, id, { userId = null } = {}) => serial(async ()
       const c = (await tx.execute({ sql: `SELECT c.id, c.amount_try, c.paid_receipt_id, ${COVERED_SQL} AS covered FROM charges c WHERE c.id = ?`, args: [cid] })).rows[0];
       if (c && c.paid_receipt_id != null && Number(c.covered) < c.amount_try) await tx.execute({ sql: "UPDATE charges SET paid_receipt_id = NULL, paid_by = NULL WHERE id = ?", args: [cid] });
     }
-    await repriceOpenSubscriptions(tx, own);
+    if (r.status === "ok") await absorbSpentCreditRaw(tx, r.user_id, "ödeme silindi"); // ADR 0001 #8
     await tx.commit();
   } catch (e) {
     await tx.rollback().catch(() => {});
@@ -474,7 +509,7 @@ export const deleteReceipt = (db, id, { userId = null } = {}) => serial(async ()
  * PDF (admin-recorded payments) have nothing to review again: 409, delete them instead.
  */
 export const undoApproval = (db, id) => serial(async () => {
-  const r = (await db.execute({ sql: "SELECT id, status, pdf IS NOT NULL AS has_pdf FROM receipts WHERE id = ?", args: [id] })).rows[0];
+  const r = (await db.execute({ sql: "SELECT id, user_id, status, pdf IS NOT NULL AS has_pdf FROM receipts WHERE id = ?", args: [id] })).rows[0];
   if (!r) throw fail(404, "Dekont bulunamadı");
   if (r.status !== "ok") throw fail(409, "Dekont onaylı değil");
   if (!r.has_pdf) throw fail(409, "Yöneticinin kaydettiği ödeme geri alınamaz; sil");
@@ -488,7 +523,7 @@ export const undoApproval = (db, id) => serial(async () => {
       const c = (await tx.execute({ sql: `SELECT c.id, c.amount_try, c.paid_receipt_id, ${COVERED_SQL} AS covered FROM charges c WHERE c.id = ?`, args: [cid] })).rows[0];
       if (c && c.paid_receipt_id != null && Number(c.covered) < c.amount_try) await tx.execute({ sql: "UPDATE charges SET paid_receipt_id = NULL, paid_by = NULL WHERE id = ?", args: [cid] });
     }
-    await repriceOpenSubscriptions(tx, own);
+    await absorbSpentCreditRaw(tx, r.user_id, "ödeme geri alındı"); // ADR 0001 #8
     await tx.commit();
   } catch (e) {
     await tx.rollback().catch(() => {});

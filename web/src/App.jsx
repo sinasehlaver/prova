@@ -3,7 +3,7 @@ import { api, AUTH_EVENT } from "./api.js";
 import { tr } from "./tr.js";
 import { BellIcon, CalendarIcon, MoonIcon, ShieldIcon, SunIcon, WalletIcon, ListIcon } from "./icons.jsx";
 import Admin from "./Admin.jsx";
-import { tabOf, go } from "./nav.js";
+import { tabOf, go, navUser, noteView, noteScroll, remembered, tabTarget, forgetTab } from "./nav.js";
 import Billing from "./Billing.jsx";
 import MyReservations from "./MyReservations.jsx";
 import Calendar from "./Calendar.jsx";
@@ -245,6 +245,24 @@ function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
   const [profile, setProfile] = useState(false);
   const tabs = TABS.filter((t) => (!t.admin || me.role === "admin") && (!t.booker || me.role !== "listener"));
   const active = tabs.find((t) => t.id === tab) ? tab : "calendar";
+  navUser(me.id);
+  // reopen where the user left off: only when the page opens without a hash of its own
+  // no hash: reopen the remembered view, else name the default tab, so the hash always matches what is rendered
+  useState(() => { const r = remembered(); if (!location.hash.slice(1)) history.replaceState({ app: 1 }, "", "#" + (r.last && tabs.some((t) => t.id === r.last) ? tabTarget(r.last) : tabOf())); });
+  useEffect(() => { setTab(tabOf()); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // remember each tab's sub-view (hash) and scroll; restore the scroll when a tab comes back
+  useEffect(() => {
+    const note = () => { if (tabOf() === active) noteView(active); };
+    note();
+    window.addEventListener("hashchange", note);
+    const y = remembered().scroll[active] || 0;
+    let n = 0, t;
+    const tryScroll = () => { window.scrollTo(0, y); if (y && Math.abs(window.scrollY - y) > 2 && ++n < 12) t = setTimeout(tryScroll, 60); };
+    if (y) t = setTimeout(tryScroll, 0);
+    return () => { clearTimeout(t); window.removeEventListener("hashchange", note); };
+  }, [active]);
+  useEffect(() => { const f = () => noteScroll(active, window.scrollY); window.addEventListener("pagehide", f); return () => window.removeEventListener("pagehide", f); }, [active]);
+  const pick = (id) => { if (id === active) { forgetTab(id); window.scrollTo(0, 0); go(id); } else { noteScroll(active, window.scrollY); go(tabTarget(id)); } };
   const pendingCount = usePendingCount(me.role === "admin");
   const receiptCount = useReceiptCount(me.role === "admin");
   const requestCount = useRequestCount(me.role === "admin");
@@ -271,7 +289,7 @@ function Shell({ me, setMe, tab, setTab, theme, toggleTheme, recheck }) {
       </main>
       <nav className="tabbar" aria-label="Ana menü">
         {tabs.map(({ id, Icon }) => (
-          <button key={id} className="tab" aria-current={active === id ? "page" : undefined} onClick={() => go(id)}>
+          <button key={id} className="tab" aria-current={active === id ? "page" : undefined} onClick={() => pick(id)}>
             <span className="tab-icon">
               <Icon />
               {id === "admin" && pendingCount > 0 && (

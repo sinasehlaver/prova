@@ -46,7 +46,9 @@ export default ({ db }) => {
 
   // /me also answers for a pending (unapproved) account - that is how the web shows "Onay bekleniyor".
   // observer = "you are the bootstrap admin" (can't book, not billed). Only ever in the caller's OWN /me.
-  r.get("/me", requireSession, async (req, res) => res.json({ ...publicUser(req.user), observer: await isBootstrap(db, req.user) }));
+  r.get("/me", requireSession, async (req, res) => {
+    res.json({ ...publicUser(req.user), observer: await isBootstrap(db, req.user) });
+  });
 
   // Public self-signup: creates a PENDING account (active 0 until an admin approves) and logs the browser in with it.
   // Requires: name, email, password, optional phone.

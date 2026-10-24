@@ -507,6 +507,11 @@ input:disabled { opacity: 0.5; cursor: not-allowed; }
 .ctl-btn:focus-visible, .ctl-btn[aria-expanded="true"] { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 .ctl-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .ctl-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctl-fit { display: grid; overflow: visible; min-width: max-content; }
+.ctl-fit > * { grid-area: 1 / 1; white-space: nowrap; }
+.ctl-fit > .ctl-cur { overflow: hidden; text-overflow: ellipsis; }
+.ctl-size { visibility: hidden; height: 0; overflow: hidden; pointer-events: none; }
+.ctl-list-wrap .ctl-opt span:first-child { white-space: nowrap; }
 .ctl-chev { flex: none; color: var(--muted); transition: transform 300ms var(--ease); }
 .ctl-btn[aria-expanded="true"] .ctl-chev { transform: rotate(180deg); }
 .ctl-btn.sm { min-height: 2.25rem; width: auto; border-radius: var(--r-sm); background: var(--surface2); font-weight: 600; font-size: var(--fs-1); }
@@ -569,3 +574,5 @@ input[type="checkbox"]:disabled { opacity: 0.5; cursor: not-allowed; }
 /* number inputs: no native spinners */
 input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.observer-note { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.observer-note > button { flex: none; }
